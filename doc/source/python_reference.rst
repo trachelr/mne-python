@@ -285,6 +285,7 @@ Visualization
    plot_image_epochs
    plot_raw
    plot_raw_psds
+   plot_events
    plot_source_estimates
    plot_sparse_source_estimates
    plot_topo
@@ -317,9 +318,9 @@ Projections:
    read_proj
    write_proj
 
-Set sensors locations for processing and plotting:
+Manipulate channels and set sensors locations for processing and plotting:
 
-.. currentmodule:: mne.montages
+.. currentmodule:: mne.channels
 
 .. autosummary::
    :toctree: generated/
@@ -327,17 +328,13 @@ Set sensors locations for processing and plotting:
 
    read_montage
    apply_montage
-
-.. currentmodule:: mne.layouts
-
-.. autosummary::
-   :toctree: generated/
-   :template: function.rst
-
    read_layout
    find_layout
    make_eeg_layout
    make_grid_layout
+   read_ch_connectivity
+   equalize_channels
+   rename_channels
 
 :py:mod:`mne.preprocessing`:
 

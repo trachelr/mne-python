@@ -25,11 +25,12 @@ from .utils import _prepare_trellis, _check_delayed_ssp
 from .utils import _draw_proj_checkbox
 
 
-def _prepare_topo_plot(obj, ch_type, layout):
+def _prepare_topo_plot(inst, ch_type, layout):
     """"Aux Function"""
-    info = copy.deepcopy(obj.info)
+    info = copy.deepcopy(inst.info)
+
     if layout is None and ch_type is not 'eeg':
-        from ..layouts.layout import find_layout
+        from ..channels import find_layout
         layout = find_layout(info)
     elif layout == 'auto':
         layout = None
@@ -41,7 +42,7 @@ def _prepare_topo_plot(obj, ch_type, layout):
     # special case for merging grad channels
     if (ch_type == 'grad' and FIFF.FIFFV_COIL_VV_PLANAR_T1 in
             np.unique([ch['coil_type'] for ch in info['chs']])):
-        from ..layouts.layout import _pair_grad_sensors
+        from ..channels.layout  import _pair_grad_sensors
         picks, pos = _pair_grad_sensors(info, layout)
         merge_grads = True
     else:
@@ -57,9 +58,8 @@ def _prepare_topo_plot(obj, ch_type, layout):
             raise ValueError("No channels of type %r" % ch_type)
 
         if layout is None:
-            chs = [info['chs'][i] for i in picks]
-            from ..layouts.layout import _find_topomap_coords
-            pos = _find_topomap_coords(chs, layout)
+            from ..channels.layout  import _find_topomap_coords
+            pos = _find_topomap_coords(info, picks)
         else:
             names = [n.upper() for n in layout.names]
             pos = [layout.pos[names.index(info['ch_names'][k].upper())]
@@ -71,7 +71,7 @@ def _prepare_topo_plot(obj, ch_type, layout):
         # instead of MEG0142 or MEG0143 which are the 2 planar grads.
         ch_names = [ch_names[k][:-1] + 'x' for k in range(0, len(ch_names), 2)]
 
-    return picks, pos, merge_grads, ch_names
+    return picks, pos, merge_grads, ch_names, ch_type
 
 
 def _plot_update_evoked_topomap(params, bools):
@@ -88,7 +88,7 @@ def _plot_update_evoked_topomap(params, bools):
     data = new_evoked.data[np.ix_(params['picks'],
                                   params['time_idx'])] * params['scale']
     if params['merge_grads']:
-        from ..layouts.layout import _merge_grad_data
+        from ..channels.layout  import _merge_grad_data
         data = _merge_grad_data(data)
     image_mask = params['image_mask']
 
@@ -154,7 +154,7 @@ def plot_projs_topomap(projs, layout=None, cmap='RdBu_r', sensors=True,
     import matplotlib.pyplot as plt
 
     if layout is None:
-        from ..layouts import read_layout
+        from ..channels import read_layout
         layout = read_layout('Vectorview-all')
 
     if not isinstance(layout, list):
@@ -175,7 +175,7 @@ def plot_projs_topomap(projs, layout=None, cmap='RdBu_r', sensors=True,
         for l in layout:
             is_vv = l.kind.startswith('Vectorview')
             if is_vv:
-                from ..layouts.layout import _pair_grad_sensors_from_ch_names
+                from ..channels.layout  import _pair_grad_sensors_from_ch_names
                 grad_pairs = _pair_grad_sensors_from_ch_names(ch_names)
                 if grad_pairs:
                     ch_names = [ch_names[i] for i in grad_pairs]
@@ -186,7 +186,7 @@ def plot_projs_topomap(projs, layout=None, cmap='RdBu_r', sensors=True,
 
             pos = l.pos[idx]
             if is_vv and grad_pairs:
-                from ..layouts.layout import _merge_grad_data
+                from ..channels.layout  import _merge_grad_data
                 shape = (len(idx) / 2, 2, -1)
                 pos = pos.reshape(shape).mean(axis=1)
                 data = _merge_grad_data(data[grad_pairs]).ravel()
@@ -626,8 +626,8 @@ def plot_ica_components(ica, picks=None, ch_type='mag', res=64,
         raise RuntimeError('The ICA\'s measurement info is missing. Please '
                            'fit the ICA or add the corresponding info object.')
 
-    data_picks, pos, merge_grads, names = _prepare_topo_plot(ica, ch_type,
-                                                             layout)
+    data_picks, pos, merge_grads, names, _ = _prepare_topo_plot(ica, ch_type,
+                                                                layout)
     pos, outlines = _check_outlines(pos, outlines)
     if outlines not in (None, 'head'):
         image_mask, pos = _make_image_mask(outlines, pos, res)
@@ -644,7 +644,7 @@ def plot_ica_components(ica, picks=None, ch_type='mag', res=64,
     fig.suptitle(title)
 
     if merge_grads:
-        from ..layouts.layout import _merge_grad_data
+        from ..channels.layout  import _merge_grad_data
     for ii, data_, ax in zip(picks, data, axes):
         ax.set_title('IC #%03d' % ii, fontsize=12)
         data_ = _merge_grad_data(data_) if merge_grads else data_
@@ -765,8 +765,8 @@ def plot_tfr_topomap(tfr, tmin=None, tmax=None, fmin=None, fmax=None,
     import matplotlib.pyplot as plt
     from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-    picks, pos, merge_grads, names = _prepare_topo_plot(tfr, ch_type,
-                                                        layout)
+    picks, pos, merge_grads, names, _ = _prepare_topo_plot(tfr, ch_type,
+                                                           layout)
     if not show_names:
         names = None
 
@@ -793,7 +793,7 @@ def plot_tfr_topomap(tfr, tmin=None, tmax=None, fmin=None, fmax=None,
     data = np.mean(np.mean(data, axis=2), axis=1)[:, np.newaxis]
 
     if merge_grads:
-        from ..layouts.layout import _merge_grad_data
+        from ..channels.layout  import _merge_grad_data
         data = _merge_grad_data(data)
 
     vmin, vmax = _setup_vmin_vmax(data, vmin, vmax)
@@ -929,16 +929,6 @@ def plot_evoked_topomap(evoked, times=None, ch_type='mag', layout=None,
     """
     import matplotlib.pyplot as plt
 
-    if ch_type.startswith('planar'):
-        key = 'grad'
-    else:
-        key = ch_type
-
-    if scale is None:
-        scale = DEFAULTS['scalings'][key]
-    if unit is None:
-        unit = DEFAULTS['units'][key]
-
     if mask_params is None:
         mask_params = DEFAULTS['mask_params'].copy()
         mask_params['markersize'] *= size / 2.
@@ -957,8 +947,19 @@ def plot_evoked_topomap(evoked, times=None, ch_type='mag', layout=None,
             raise ValueError('Times should be between %0.3f and %0.3f. (Got '
                              '%0.3f).' % (tmin, tmax, t))
 
-    picks, pos, merge_grads, names = _prepare_topo_plot(evoked, ch_type,
-                                                        layout)
+    picks, pos, merge_grads, names, ch_type = _prepare_topo_plot(
+        evoked, ch_type, layout)
+
+    if ch_type.startswith('planar'):
+        key = 'grad'
+    else:
+        key = ch_type
+
+    if scale is None:
+        scale = DEFAULTS['scalings'][key]
+    if unit is None:
+        unit = DEFAULTS['units'][key]
+
     if not show_names:
         names = None
 
@@ -998,7 +999,7 @@ def plot_evoked_topomap(evoked, times=None, ch_type='mag', layout=None,
 
     data *= scale
     if merge_grads:
-        from ..layouts.layout import _merge_grad_data
+        from ..channels.layout  import _merge_grad_data
         data = _merge_grad_data(data)
 
     vmin, vmax = _setup_vmin_vmax(data, vmin, vmax)
