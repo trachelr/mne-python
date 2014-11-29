@@ -9,11 +9,9 @@ import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 from nose.tools import assert_true, assert_raises, assert_equal
 
-from mne import find_events
-from mne.io import read_raw_egi
+from mne import find_events, pick_types, concatenate_raws
+from mne.io import read_raw_egi, Raw
 from mne.io.egi import _combine_triggers
-from mne import pick_types
-from mne.io import Raw
 from mne.utils import _TempDir
 
 warnings.simplefilter('always')  # enable b/c these tests throw warnings
@@ -36,7 +34,6 @@ def test_io_egi():
 
     include = ['TRSP', 'XXX1']
     raw = read_raw_egi(egi_fname, include=include)
-
     _ = repr(raw)
     _ = repr(raw.info)  # analysis:ignore, noqa
 
@@ -47,8 +44,7 @@ def test_io_egi():
     raw2 = Raw(out_fname, preload=True)
     data1, times1 = raw[:10, :]
     data2, times2 = raw2[:10, :]
-
-    assert_array_almost_equal(data1, data2)
+    assert_array_almost_equal(data1, data2, 9)
     assert_array_almost_equal(times1, times2)
 
     eeg_chan = [c for c in raw.ch_names if 'EEG' in c]
@@ -78,3 +74,7 @@ def test_io_egi():
     for ii, k in enumerate(include, 1):
         assert_true(k in raw.event_id)
         assert_true(raw.event_id[k] == ii)
+
+    # Make sure concatenation works
+    raw_concat = concatenate_raws([raw.copy(), raw])
+    assert_equal(raw_concat.n_times, 2 * raw.n_times)

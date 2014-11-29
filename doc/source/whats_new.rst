@@ -29,9 +29,15 @@ Changelog
 
    - Add support for stereotactic EEG (sEEG) channel type by `Marmaduke Woodman`_
 
-   - Add support for montage files by `Denis Engemann`_, `Marijn van Vliet`_ and `Alex Gramfort`_.
+   - Add support for montage files by `Denis Engemann`_, `Marijn van Vliet`_, `Jona Sassenhagen`_, `Alex Gramfort`_ and `Teon Brooks`_
 
    - Add support for spatiotemporal permutation clustering on sensors by `Denis Engemann`_
+
+   - Add support for multitaper time-frequency analysis by `Hari Bharadwaj`_
+
+   - Add Stockwell (S) transform for time-frequency representations by `Denis Engemann`_ and `Alex Gramfort`_
+
+   - Add reading and writing support for time frequency data (AverageTFR objects) by  `Denis Engemann`_
 
 BUG
 ~~~
@@ -41,7 +47,7 @@ BUG
    - Fix incorrect data matrix when tfr was plotted with parameters `tmin`, `tmax`, `fmin` and `fmax` by `Mainak Jas`_
 
    - Fix channel names in topomaps by `Alex Gramfort`_
-   
+
    - Fix mapping of 'l_trans_bandwidth' (to low frequency) and
     'h_trans_bandwidth' (to high frequency) in `_BaseRaw.filter` by `Denis Engemann`_
 
@@ -51,22 +57,29 @@ BUG
 
    - Fix highpass and lowpass units read from Brainvision vhdr files by `Alex Gramfort`_
 
-   - Add missing attributes for Brainvision and KIT systems needed for resample by `Teon Brooks`_
+   - Add missing attributes for BrainVision and KIT systems needed for resample by `Teon Brooks`_
 
    - Fix file extensions of SSP projection files written by mne commands (from _proj.fif to -prof.fif) by `Alex Gramfort`_
 
    - Generating EEG layouts no longer requires digitization points by `Marijn van Vliet`_
 
+   - Add missing attributes to BTI, KIT, and BrainVision by `Eric Larson`_
+
+   - The API change to the edf, brainvision, and egi break backwards compatibility for when importing eeg data by `Teon Brooks`_
+
 API
 ~~~
 
    - apply_inverse functions have a new boolean parameter `prepared` which saves computation time by calling `prepare_inverse_operator` only if it is False
-   
+
    - find_events and read_events functions have a new parameter `mask` to set some bits to a don't care state by `Teon Brooks`_
 
    - New channels module including layouts, electrode montages, and neighbor definitions of sensors which deprecates
 	``mne.layouts`` by `Denis Engemann`_
+    
+   - `read_raw_brainvision`, `read_raw_edf`, `read_raw_egi` all use a standard montage import by `Teon Brooks`_
 
+   - Fix missing calibration factors for ``mne.io.egi.read_raw_egi`` by `Denis Engemann`_ and `Federico Raimondo`_
 
 .. _changes_0_8:
 
@@ -881,3 +894,8 @@ of commits):
 .. _Marijn van Vliet: http://github.com/wmvanvliet
 
 .. _Marmaduke Woodman: https://github.com/maedoc
+
+.. _Jona Sassenhagen: https://github.com/jona-sassenhagen
+
+.. _Hari Bharadwaj: http://www.haribharadwaj.com
+
