@@ -17,6 +17,8 @@ from mne import io
 from mne.time_frequency import tfr_stockwell
 from mne.datasets import somato
 
+print(__doc__)
+
 ###############################################################################
 # Set parameters
 data_path = somato.data_path()
@@ -40,7 +42,7 @@ epochs = mne.Epochs(raw, events, event_id, tmin, tmax, picks=picks,
 
 epochs = epochs.pick_channels([epochs.ch_names[82]])  # reduce computation
 
-power, itc = tfr_stockwell(epochs, fmin=6., fmax=30., decim=4, n_jobs=2,
+power, itc = tfr_stockwell(epochs, fmin=6., fmax=30., decim=4, n_jobs=1,
                            width=.3, return_itc=True)
 
 power.plot([0], baseline=(-0.5, 0), mode=None, title='S-transform (power)')

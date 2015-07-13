@@ -4,6 +4,7 @@
 # License: BSD (3-clause)
 
 import os
+from os import path as op
 import glob
 import numpy as np
 from numpy import sin, cos
@@ -43,15 +44,17 @@ def _coord_frame_name(cframe):
              FIFF.FIFFV_MNE_COORD_FS_TAL_GTZ: 'Talairach (MNI z > 0)',
              FIFF.FIFFV_MNE_COORD_FS_TAL_LTZ: 'Talairach (MNI z < 0)',
              -1: 'unknown'}
-    return types.get(cframe, 'unknown')
+    return types.get(int(cframe), 'unknown')
 
 
 def _print_coord_trans(t, prefix='Coordinate transformation: '):
     logger.info(prefix + '%s -> %s'
                 % (_coord_frame_name(t['from']), _coord_frame_name(t['to'])))
-    for tt in t['trans']:
-        logger.info('    % 8.6f % 8.6f % 8.6f    %7.2f mm' %
-                    (tt[0], tt[1], tt[2], 1000 * tt[3]))
+    for ti, tt in enumerate(t['trans']):
+        scale = 1000. if ti != 3 else 1.
+        text = ' mm' if ti != 3 else ''
+        logger.info('    % 8.6f % 8.6f % 8.6f    %7.2f%s' %
+                    (tt[0], tt[1], tt[2], scale * tt[3], text))
 
 
 def _find_trans(subject, subjects_dir=None):
@@ -226,18 +229,52 @@ def translation(x=0, y=0, z=0):
     return m
 
 
-def _get_mri_head_t_from_trans_file(fname):
-    """Helper to convert "-trans.txt" to "-trans.fif" mri-type equivalent"""
-    # Read a Neuromag -> FreeSurfer transformation matrix
-    t = np.genfromtxt(fname)
-    if t.ndim != 2 or t.shape != (4, 4):
-        raise RuntimeError('File "%s" did not have 4x4 entries' % fname)
-    t = {'from': FIFF.FIFFV_COORD_HEAD, 'to': FIFF.FIFFV_COORD_MRI, 'trans': t}
-    return invert_transform(t)
+def _get_mri_head_t(mri):
+    """Get mri_head_t (from=mri, to=head) from mri filename"""
+    if isinstance(mri, string_types):
+        if not op.isfile(mri):
+            raise IOError('mri file "%s" not found' % mri)
+        if op.splitext(mri)[1] in ['.fif', '.gz']:
+            mri_head_t = read_trans(mri)
+        else:
+            # convert "-trans.txt" to "-trans.fif" mri-type equivalent
+            t = np.genfromtxt(mri)
+            if t.ndim != 2 or t.shape != (4, 4):
+                raise RuntimeError('File "%s" did not have 4x4 entries'
+                                   % mri)
+            mri_head_t = {'from': FIFF.FIFFV_COORD_HEAD,
+                          'to': FIFF.FIFFV_COORD_MRI, 'trans': t}
+    else:  # dict
+        mri_head_t = mri
+        mri = 'dict'
+    # it's usually a head->MRI transform, so we probably need to invert it
+    if mri_head_t['from'] == FIFF.FIFFV_COORD_HEAD:
+        mri_head_t = invert_transform(mri_head_t)
+    if not (mri_head_t['from'] == FIFF.FIFFV_COORD_MRI and
+            mri_head_t['to'] == FIFF.FIFFV_COORD_HEAD):
+        raise RuntimeError('Incorrect MRI transform provided')
+    return mri_head_t, mri
 
 
 def combine_transforms(t_first, t_second, fro, to):
-    """Combine two transforms"""
+    """Combine two transforms
+
+    Parameters
+    ----------
+    t_first : dict
+        First transform.
+    t_second : dict
+        Second transform.
+    fro : int
+        From coordinate frame.
+    to : int
+        To coordinate frame.
+
+    Returns
+    -------
+    trans : dict
+        Combined transformation.
+    """
     if t_first['from'] != fro:
         raise RuntimeError('From mismatch: %s ("%s") != %s ("%s")'
                            % (t_first['from'],
@@ -308,10 +345,19 @@ def write_trans(fname, trans):
 
 def invert_transform(trans):
     """Invert a transformation between coordinate systems
+
+    Parameters
+    ----------
+    trans : dict
+        Transform to invert.
+
+    Returns
+    -------
+    inv_trans : dict
+        Inverse transform.
     """
-    itrans = {'to': trans['from'], 'from': trans['to'],
-              'trans': linalg.inv(trans['trans'])}
-    return itrans
+    return {'to': trans['from'], 'from': trans['to'],
+            'trans': linalg.inv(trans['trans'])}
 
 
 _frame_dict = dict(meg=FIFF.FIFFV_COORD_DEVICE,
@@ -324,9 +370,9 @@ def transform_surface_to(surf, dest, trans):
 
     Parameters
     ----------
-    src : dict
+    surf : dict
         Surface.
-    orig: 'meg' | 'mri' | 'head' | int
+    dest : 'meg' | 'mri' | 'head' | int
         Destination coordinate system. Can be an integer for using
         FIFF types.
     trans : dict
@@ -382,8 +428,8 @@ def transform_coordinates(filename, pos, orig, dest):
     trans_pos: array of shape N x 3
         The transformed locations
 
-    Example
-    -------
+    Examples
+    --------
     transform_coordinates('all-trans.fif', np.eye(3), 'meg', 'fs_tal')
     transform_coordinates('all-trans.fif', np.eye(3), 'mri', 'mni_tal')
     """
@@ -421,9 +467,9 @@ def transform_coordinates(filename, pos, orig, dest):
     #
     #   Check we have everything we need
     #
-    if ((orig == FIFF.FIFFV_COORD_HEAD and T0 is None) or (T1 is None)
-            or (T2 is None) or (dest == FIFF.FIFFV_MNE_COORD_FS_TAL and
-                                ((T3minus is None) or (T3minus is None)))):
+    if ((orig == FIFF.FIFFV_COORD_HEAD and T0 is None) or (T1 is None) or
+            (T2 is None) or (dest == FIFF.FIFFV_MNE_COORD_FS_TAL and
+                             ((T3minus is None) or (T3minus is None)))):
         raise ValueError('All required coordinate transforms not found')
 
     #

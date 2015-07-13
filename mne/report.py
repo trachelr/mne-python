@@ -3,6 +3,7 @@
 
 # Authors: Alex Gramfort <alexandre.gramfort@telecom-paristech.fr>
 #          Mainak Jas <mainak@neuro.hut.fi>
+#          Teon Brooks <teon.brooks@gmail.com>
 #
 # License: BSD (3-clause)
 
@@ -19,9 +20,9 @@ from datetime import datetime as dt
 
 import numpy as np
 
-from . import read_evokeds, read_events, pick_types, Covariance
+from . import read_evokeds, read_events, pick_types, read_cov
 from .io import Raw, read_info
-from .utils import _TempDir, logger, verbose, get_subjects_dir, deprecated
+from .utils import _TempDir, logger, verbose, get_subjects_dir
 from .viz import plot_events, plot_trans, plot_cov
 from .viz._3d import _plot_mri_contours
 from .forward import read_forward_solution
@@ -81,7 +82,11 @@ def _scale_mpl_figure(fig, scale):
         sfactor = -((1. / scale) ** 2)
     for text in fig.findobj(mpl.text.Text):
         fs = text.get_fontsize()
-        text.set_fontsize(fs + sfactor)
+        new_size = fs + sfactor
+        if new_size <= 0:
+            raise ValueError('could not rescale matplotlib fonts, consider '
+                             'increasing "scale"')
+        text.set_fontsize(new_size)
 
     fig.canvas.draw()
 
@@ -135,6 +140,9 @@ def _is_bad_fname(fname):
     """Auxiliary function for identifying bad file naming patterns
        and highlighting them in red in the TOC.
     """
+    if fname.endswith('(whitened)'):
+        fname = fname[:-11]
+
     if not fname.endswith(tuple(VALID_EXTENSIONS + ['bem', 'custom'])):
         return 'red'
     else:
@@ -186,6 +194,10 @@ def _get_toc_property(fname):
         div_klass = 'mri'
         tooltip = 'MRI'
         text = 'MRI'
+    elif fname.endswith('(whitened)'):
+        div_klass = 'evoked'
+        tooltip = fname
+        text = op.basename(fname[:-11]) + '(whitened)'
     else:
         div_klass = fname.split('-#-')[1]
         tooltip = fname.split('-#-')[0]
@@ -194,10 +206,17 @@ def _get_toc_property(fname):
     return div_klass, tooltip, text
 
 
-def _iterate_files(report, fnames, info, sfreq):
+def _iterate_files(report, fnames, info, cov, baseline, sfreq, on_error):
     """Auxiliary function to parallel process in batch mode.
     """
     htmls, report_fnames, report_sectionlabels = [], [], []
+
+    def _update_html(html, report_fname, report_sectionlabel):
+        """Update the lists above."""
+        htmls.append(html)
+        report_fnames.append(report_fname)
+        report_sectionlabels.append(report_sectionlabel)
+
     for fname in fnames:
         logger.info("Rendering : %s"
                     % op.join('...' + report.data_path[-20:],
@@ -217,7 +236,13 @@ def _iterate_files(report, fnames, info, sfreq):
                 report_fname = fname
                 report_sectionlabel = 'inverse'
             elif fname.endswith(('-ave.fif', '-ave.fif.gz')):
-                html = report._render_evoked(fname)
+                if cov is not None:
+                    html = report._render_whitened_evoked(fname, cov, baseline)
+                    report_fname = fname + ' (whitened)'
+                    report_sectionlabel = 'evoked'
+                    _update_html(html, report_fname, report_sectionlabel)
+
+                html = report._render_evoked(fname, baseline)
                 report_fname = fname
                 report_sectionlabel = 'evoked'
             elif fname.endswith(('-eve.fif', '-eve.fif.gz')):
@@ -228,13 +253,13 @@ def _iterate_files(report, fnames, info, sfreq):
                 html = report._render_epochs(fname)
                 report_fname = fname
                 report_sectionlabel = 'epochs'
-            elif (fname.endswith(('-cov.fif', '-cov.fif.gz'))
-                  and report.info_fname is not None):
+            elif (fname.endswith(('-cov.fif', '-cov.fif.gz')) and
+                  report.info_fname is not None):
                 html = report._render_cov(fname, info)
                 report_fname = fname
                 report_sectionlabel = 'covariance'
-            elif (fname.endswith(('-trans.fif', '-trans.fif.gz'))
-                  and report.info_fname is not None and report.subjects_dir
+            elif (fname.endswith(('-trans.fif', '-trans.fif.gz')) and
+                  report.info_fname is not None and report.subjects_dir
                   is not None and report.subject is not None):
                 html = report._render_trans(fname, report.data_path, info,
                                             report.subject,
@@ -246,13 +271,14 @@ def _iterate_files(report, fnames, info, sfreq):
                 report_fname = None
                 report_sectionlabel = None
         except Exception as e:
-            logger.warning('Failed to process file %s:\n"%s"' % (fname, e))
+            if on_error == 'warn':
+                logger.warning('Failed to process file %s:\n"%s"' % (fname, e))
+            elif on_error == 'raise':
+                raise
             html = None
             report_fname = None
             report_sectionlabel = None
-        htmls.append(html)
-        report_fnames.append(report_fname)
-        report_sectionlabels.append(report_sectionlabel)
+        _update_html(html, report_fname, report_sectionlabel)
 
     return htmls, report_fnames, report_sectionlabels
 
@@ -520,6 +546,13 @@ footer_template = HTMLTemplate(u"""
 </html>
 """)
 
+html_template = Template(u"""
+<li class="{{div_klass}}" id="{{id}}">
+    <h4>{{caption}}</h4>
+    <div class="thumbnail">{{html}}</div>
+</li>
+""")
+
 image_template = Template(u"""
 
 {{default interactive = False}}
@@ -527,6 +560,7 @@ image_template = Template(u"""
 {{default id = False}}
 {{default image_format = 'png'}}
 {{default scale = None}}
+{{default comment = None}}
 
 <li class="{{div_klass}}" {{if id}}id="{{id}}"{{endif}}
 {{if not show}}style="display: none"{{endif}}>
@@ -547,6 +581,17 @@ image_template = Template(u"""
     {{elif image_format == 'svg'}}
         <div style="text-align:center;">
             {{img}}
+        </div>
+    {{endif}}
+    {{if comment is not None}}
+        <br><br>
+        <div style="text-align:center;">
+            <style>
+                p.test {word-wrap: break-word;}
+            </style>
+            <p class="test">
+                {{comment}}
+            </p>
         </div>
     {{endif}}
 {{else}}
@@ -637,6 +682,12 @@ toc_list = Template(u"""
 """)
 
 
+def _check_scale(scale):
+    """Helper to ensure valid scale value is passed"""
+    if np.isscalar(scale) and scale <= 0:
+        raise ValueError('scale must be positive, not %s' % scale)
+
+
 class Report(object):
     """Object for rendering HTML
 
@@ -651,15 +702,30 @@ class Report(object):
         Subject name.
     title : str
         Title of the report.
+    cov_fname : str
+        Name of the file containing the noise covariance.
+    baseline : None or tuple of length 2 (default (None, 0))
+        The time interval to apply baseline correction for evokeds.
+        If None do not apply it. If baseline is (a, b)
+        the interval is between "a (s)" and "b (s)".
+        If a is None the beginning of the data is used
+        and if b is None then b is set to the end of the interval.
+        If baseline is equal to (None, None) all the time
+        interval is used.
+        The baseline (a, b) includes both endpoints, i.e. all
+        timepoints t such that a <= t <= b.
     verbose : bool, str, int, or None
         If not None, override default verbose level (see mne.verbose).
     """
 
-    def __init__(self, info_fname=None, subjects_dir=None, subject=None,
-                 title=None, verbose=None):
+    def __init__(self, info_fname=None, subjects_dir=None,
+                 subject=None, title=None, cov_fname=None, baseline=None,
+                 verbose=None):
 
         self.info_fname = info_fname
-        self.subjects_dir = subjects_dir
+        self.cov_fname = cov_fname
+        self.baseline = baseline
+        self.subjects_dir = get_subjects_dir(subjects_dir, raise_error=False)
         self.subject = subject
         self.title = title
         self.verbose = verbose
@@ -670,6 +736,9 @@ class Report(object):
         self.sections = []  # List of sections
         self._sectionlabels = []  # Section labels
         self._sectionvars = {}  # Section variable names in js
+        # boolean to specify if sections should be ordered in natural
+        # order of processing (raw -> events ... -> inverse)
+        self._sort_sections = False
 
         self._init_render()  # Initialize the renderer
 
@@ -679,85 +748,86 @@ class Report(object):
         self.initial_id += 1
         return self.initial_id
 
-    def _validate_input(self, items, captions, section):
+    def _validate_input(self, items, captions, section, comments=None):
         """Validate input.
         """
         if not isinstance(items, (list, tuple)):
             items = [items]
         if not isinstance(captions, (list, tuple)):
             captions = [captions]
-        if not len(items) == len(captions):
-            raise ValueError('Captions and report items must have the same'
-                             ' length.')
+        if not isinstance(comments, (list, tuple)):
+            if comments is None:
+                comments = [comments] * len(captions)
+            else:
+                comments = [comments]
+        if len(comments) != len(items):
+            raise ValueError('Comments and report items must have the same '
+                             'length or comments should be None.')
+        elif len(captions) != len(items):
+            raise ValueError('Captions and report items must have the same '
+                             'length.')
 
         # Book-keeping of section names
         if section not in self.sections:
             self.sections.append(section)
             self._sectionvars[section] = _clean_varnames(section)
 
-        return items, captions
+        return items, captions, comments
 
     def _add_figs_to_section(self, figs, captions, section='custom',
-                             image_format='png', scale=None):
+                             image_format='png', scale=None, comments=None):
         """Auxiliary method for `add_section` and `add_figs_to_section`.
         """
+        from scipy.misc import imread
+        import matplotlib.pyplot as plt
+        mayavi = None
         try:
             # on some version mayavi.core won't be exposed unless ...
-            from mayavi import mlab  # noqa, analysis:ignore... mlab imported
+            from mayavi import mlab  # noqa, mlab imported
             import mayavi
-        except ImportError:
+        except:  # on some systems importing Mayavi raises SystemExit (!)
             warnings.warn('Could not import mayavi. Trying to render '
                           '`mayavi.core.scene.Scene` figure instances'
                           ' will throw an error.')
-        figs, captions = self._validate_input(figs, captions, section)
-        for fig, caption in zip(figs, captions):
+        figs, captions, comments = self._validate_input(figs, captions,
+                                                        section, comments)
+        _check_scale(scale)
+        for fig, caption, comment in zip(figs, captions, comments):
             caption = 'custom plot' if caption == '' else caption
             sectionvar = self._sectionvars[section]
             global_id = self._get_id()
             div_klass = self._sectionvars[section]
             img_klass = self._sectionvars[section]
 
-            if isinstance(fig, mayavi.core.scene.Scene):
+            if mayavi is not None and isinstance(fig, mayavi.core.scene.Scene):
                 tempdir = _TempDir()
                 temp_fname = op.join(tempdir, 'test')
-                fig.scene.save_png(temp_fname)
+                if fig.scene is not None:
+                    fig.scene.save_png(temp_fname)
+                    img = imread(temp_fname)
+                else:  # Testing mode
+                    img = np.zeros((2, 2, 3))
+
                 mayavi.mlab.close(fig)
-            else:
-                img = _fig_to_img(fig=fig, scale=scale,
-                                  image_format=image_format)
+                fig = plt.figure()
+                plt.imshow(img)
+                plt.axis('off')
+
+            img = _fig_to_img(fig=fig, scale=scale,
+                              image_format=image_format)
             html = image_template.substitute(img=img, id=global_id,
                                              div_klass=div_klass,
                                              img_klass=img_klass,
                                              caption=caption,
                                              show=True,
                                              image_format=image_format,
-                                             width=scale)
+                                             comment=comment)
             self.fnames.append('%s-#-%s-#-custom' % (caption, sectionvar))
             self._sectionlabels.append(sectionvar)
             self.html.append(html)
 
-    @deprecated("'add_section' will be removed in v0.10. Use"
-                " 'add_figs_to_section' and 'add_images_to_section' instead.")
-    def add_section(self, figs, captions, section='custom'):
-        """Append custom user-defined figures.
-
-        Parameters
-        ----------
-        figs : list of figures.
-            Each figure in the list can be an instance of
-            matplotlib.pyplot.Figure, mayavi.core.scene.Scene,
-            or np.ndarray (images read in using scipy.imread).
-        captions : list of str
-            A list of captions to the figures.
-        section : str
-            Name of the section. If section already exists, the figures
-            will be appended to the end of the section
-        """
-        return self._add_figs_to_section(figs=figs, captions=captions,
-                                         section=section)
-
     def add_figs_to_section(self, figs, captions, section='custom',
-                            scale=None, image_format='png'):
+                            scale=None, image_format='png', comments=None):
         """Append custom user-defined figures.
 
         Parameters
@@ -773,41 +843,50 @@ class Report(object):
             will be appended to the end of the section
         scale : float | None | callable
             Scale the images maintaining the aspect ratio.
-            If None, no scaling is applied.
-            If float, scale will determine the relative width in percent.
-            If function, should take a figure object as input parameter.
-            Defaults to None.
+            If None, no scaling is applied. If float, scale will determine
+            the relative scaling (might not work for scale <= 1 depending on
+            font sizes). If function, should take a figure object as input
+            parameter. Defaults to None.
         image_format : {'png', 'svg'}
             The image format to be used for the report. Defaults to 'png'.
+        comments : None | str | list of str
+            A string of text or a list of strings of text to be appended after
+            the figure.
         """
         return self._add_figs_to_section(figs=figs, captions=captions,
                                          section=section, scale=scale,
-                                         image_format=image_format)
+                                         image_format=image_format,
+                                         comments=comments)
 
     def add_images_to_section(self, fnames, captions, scale=None,
-                              section='custom'):
+                              section='custom', comments=None):
         """Append custom user-defined images.
 
         Parameters
         ----------
-        fnames : list of str
-            A list of filenames from which images are read.
-        captions : list of str
-            A list of captions to the images.
+        fnames : str | list of str
+            A filename or a list of filenames from which images are read.
+        captions : str | list of str
+            A caption or a list of captions to the images.
         scale : float | None
             Scale the images maintaining the aspect ratio.
             Defaults to None. If None, no scaling will be applied.
         section : str
             Name of the section. If section already exists, the images
             will be appended to the end of the section.
+        comments : None | str | list of str
+            A string of text or a list of strings of text to be appended after
+            the image.
         """
         # Note: using scipy.misc is equivalent because scipy internally
         # imports PIL anyway. It's not possible to redirect image output
         # to binary string using scipy.misc.
         from PIL import Image
-        fnames, captions = self._validate_input(fnames, captions, section)
+        fnames, captions, comments = self._validate_input(fnames, captions,
+                                                          section, comments)
+        _check_scale(scale)
 
-        for fname, caption in zip(fnames, captions):
+        for fname, caption, comment in zip(fnames, captions, comments):
             caption = 'custom plot' if caption == '' else caption
             sectionvar = self._sectionvars[section]
             global_id = self._get_id()
@@ -824,10 +903,78 @@ class Report(object):
                                              img_klass=img_klass,
                                              caption=caption,
                                              width=scale,
+                                             comment=comment,
                                              show=True)
             self.fnames.append('%s-#-%s-#-custom' % (caption, sectionvar))
             self._sectionlabels.append(sectionvar)
             self.html.append(html)
+
+    def add_htmls_to_section(self, htmls, captions, section='custom'):
+        """Append htmls to the report.
+
+        Parameters
+        ----------
+        htmls : str | list of str
+            An html str or a list of html str.
+        captions : str | list of str
+            A caption or a list of captions to the htmls.
+        section : str
+            Name of the section. If section already exists, the images
+            will be appended to the end of the section.
+
+        Notes
+        -----
+        .. versionadded:: 0.9.0
+        """
+        htmls, captions, _ = self._validate_input(htmls, captions, section)
+        for html, caption in zip(htmls, captions):
+            caption = 'custom plot' if caption == '' else caption
+            sectionvar = self._sectionvars[section]
+            global_id = self._get_id()
+            div_klass = self._sectionvars[section]
+
+            self.fnames.append('%s-#-%s-#-custom' % (caption, sectionvar))
+            self._sectionlabels.append(sectionvar)
+            self.html.append(
+                html_template.substitute(div_klass=div_klass, id=global_id,
+                                         caption=caption, html=html))
+
+    def add_bem_to_section(self, subject, caption='BEM', section='bem',
+                           decim=2, n_jobs=1, subjects_dir=None):
+        """Renders a bem slider html str.
+
+        Parameters
+        ----------
+        subject : str
+            Subject name.
+        caption : str
+            A caption for the bem.
+        section : str
+            Name of the section. If section already exists, the bem
+            will be appended to the end of the section.
+        decim : int
+            Use this decimation factor for generating MRI/BEM images
+            (since it can be time consuming).
+        n_jobs : int
+          Number of jobs to run in parallel.
+        subjects_dir : str | None
+            Path to the SUBJECTS_DIR. If None, the path is obtained by using
+            the environment variable SUBJECTS_DIR.
+
+        Notes
+        -----
+        .. versionadded:: 0.9.0
+        """
+        caption = 'custom plot' if caption == '' else caption
+        html = self._render_bem(subject=subject, subjects_dir=subjects_dir,
+                                decim=decim, n_jobs=n_jobs, section=section,
+                                caption=caption)
+        html, caption, _ = self._validate_input(html, caption, section)
+        sectionvar = self._sectionvars[section]
+
+        self.fnames.append('%s-#-%s-#-custom' % (caption[0], sectionvar))
+        self._sectionlabels.append(sectionvar)
+        self.html.extend(html)
 
     ###########################################################################
     # HTML rendering
@@ -875,18 +1022,18 @@ class Report(object):
             f = open(op.join(op.dirname(__file__), 'html', inc_fname),
                      'r')
             if inc_fname.endswith('.js'):
-                include.append(u'<script type="text/javascript">'
-                               + f.read() + u'</script>')
+                include.append(u'<script type="text/javascript">' +
+                               f.read() + u'</script>')
             elif inc_fname.endswith('.css'):
-                include.append(u'<style type="text/css">'
-                               + f.read() + u'</style>')
+                include.append(u'<style type="text/css">' +
+                               f.read() + u'</style>')
             f.close()
 
         self.include = ''.join(include)
 
     @verbose
     def parse_folder(self, data_path, pattern='*.fif', n_jobs=1, mri_decim=2,
-                     verbose=None):
+                     sort_sections=True, on_error='warn', verbose=None):
         """Renders all the files in the folder.
 
         Parameters
@@ -894,24 +1041,43 @@ class Report(object):
         data_path : str
             Path to the folder containing data whose HTML report will be
             created.
-        pattern : str
-            Filename pattern to include in the report. e.g., -ave.fif will
-            include all evoked files.
+        pattern : str | list of str
+            Filename pattern(s) to include in the report.
+            Example: [\*raw.fif, \*ave.fif] will include Raw as well as Evoked
+            files.
         n_jobs : int
           Number of jobs to run in parallel.
         mri_decim : int
             Use this decimation factor for generating MRI/BEM images
             (since it can be time consuming).
+        sort_sections : bool
+            If True, sort sections in the order: raw -> events -> epochs
+             -> evoked -> covariance -> trans -> mri -> forward -> inverse.
+        on_error : str
+            What to do if a file cannot be rendered. Can be 'ignore',
+            'warn' (default), or 'raise'.
         verbose : bool, str, int, or None
             If not None, override default verbose level (see mne.verbose).
         """
+        valid_errors = ['ignore', 'warn', 'raise']
+        if on_error not in valid_errors:
+            raise ValueError('on_error must be one of %s, not %s'
+                             % (valid_errors, on_error))
+        self._sort = sort_sections
+
         n_jobs = check_n_jobs(n_jobs)
         self.data_path = data_path
 
         if self.title is None:
             self.title = 'MNE Report for ...%s' % self.data_path[-20:]
 
-        fnames = _recursive_search(self.data_path, pattern)
+        if not isinstance(pattern, (list, tuple)):
+            pattern = [pattern]
+
+        # iterate through the possible patterns
+        fnames = list()
+        for p in pattern:
+            fnames.extend(_recursive_search(self.data_path, p))
 
         if self.info_fname is not None:
             info = read_info(self.info_fname)
@@ -921,13 +1087,18 @@ class Report(object):
                           '-cov.fif(.gz) and -trans.fif(.gz) files.')
             info, sfreq = None, None
 
+        cov = None
+        if self.cov_fname is not None:
+            cov = read_cov(self.cov_fname)
+        baseline = self.baseline
+
         # render plots in parallel; check that n_jobs <= # of files
         logger.info('Iterating over %s potential files (this may take some '
                     'time)' % len(fnames))
         use_jobs = min(n_jobs, max(1, len(fnames)))
         parallel, p_fun, _ = parallel_func(_iterate_files, use_jobs)
-        r = parallel(p_fun(self, fname, info, sfreq) for fname in
-                     np.array_split(fnames, use_jobs))
+        r = parallel(p_fun(self, fname, info, cov, baseline, sfreq, on_error)
+                     for fname in np.array_split(fnames, use_jobs))
         htmls, report_fnames, report_sectionlabels = zip(*r)
 
         # combine results from n_jobs discarding plots not rendered
@@ -975,7 +1146,7 @@ class Report(object):
         else:
             fname = op.realpath(fname)
 
-        self._render_toc(verbose=self.verbose)
+        self._render_toc()
 
         html = footer_template.substitute(date=time.strftime("%B %d, %Y"))
         self.html.append(html)
@@ -1018,12 +1189,13 @@ class Report(object):
         global_id = 1
 
         # Reorder self.sections to reflect natural ordering
-        sections = list(set(self.sections) & set(SECTION_ORDER))
-        custom = [section for section in self.sections if section
-                  not in SECTION_ORDER]
-        order = [sections.index(section) for section in SECTION_ORDER if
-                 section in sections]
-        self.sections = np.array(sections)[order].tolist() + custom
+        if self._sort_sections:
+            sections = list(set(self.sections) & set(SECTION_ORDER))
+            custom = [section for section in self.sections if section
+                      not in SECTION_ORDER]
+            order = [sections.index(section) for section in SECTION_ORDER if
+                     section in sections]
+            self.sections = np.array(sections)[order].tolist() + custom
 
         # Sort by section
         html, fnames, sectionlabels = [], [], []
@@ -1040,25 +1212,23 @@ class Report(object):
                     div_klass, tooltip, text = _get_toc_property(fname)
 
                     # loop through conditions for evoked
-                    if fname.endswith(('-ave.fif', '-ave.fif.gz')):
-                       # XXX: remove redundant read_evokeds
+                    if fname.endswith(('-ave.fif', '-ave.fif.gz',
+                                      '(whitened)')):
+                        text = os.path.basename(fname)
+                        if fname.endswith('(whitened)'):
+                            fname = fname[:-11]
+                        # XXX: remove redundant read_evokeds
                         evokeds = read_evokeds(fname, verbose=False)
 
-                        html_toc += toc_list.substitute(div_klass=div_klass,
-                                                        id=None, tooltip=fname,
-                                                        color='#428bca',
-                                                        text=
-                                                        os.path.basename(fname)
-                                                        )
+                        html_toc += toc_list.substitute(
+                            div_klass=div_klass, id=None, tooltip=fname,
+                            color='#428bca', text=text)
 
                         html_toc += u'<li class="evoked"><ul>'
                         for ev in evokeds:
-                            html_toc += toc_list.substitute(div_klass=
-                                                            div_klass,
-                                                            id=global_id,
-                                                            tooltip=fname,
-                                                            color=color,
-                                                            text=ev.comment)
+                            html_toc += toc_list.substitute(
+                                div_klass=div_klass, id=global_id,
+                                tooltip=fname, color=color, text=ev.comment)
                             global_id += 1
                         html_toc += u'</ul></li>'
 
@@ -1248,10 +1418,10 @@ class Report(object):
                                         repr=repr_inv)
         return html
 
-    def _render_evoked(self, evoked_fname, figsize=None):
+    def _render_evoked(self, evoked_fname, baseline=None, figsize=None):
         """Render evoked.
         """
-        evokeds = read_evokeds(evoked_fname, verbose=False)
+        evokeds = read_evokeds(evoked_fname, baseline=baseline, verbose=False)
 
         html = []
         for ev in evokeds:
@@ -1315,7 +1485,7 @@ class Report(object):
         global_id = self._get_id()
 
         epochs = read_epochs(epo_fname)
-        kwargs = dict(subject=self.subject, show=False, return_fig=True)
+        kwargs = dict(subject=self.subject, show=False)
         img = _fig_to_img(epochs.plot_drop_log, **kwargs)
         caption = 'Epochs : ' + epo_fname
         div_klass = 'epochs'
@@ -1332,7 +1502,7 @@ class Report(object):
         """Render cov.
         """
         global_id = self._get_id()
-        cov = Covariance(cov_fname)
+        cov = read_cov(cov_fname)
         fig, _ = plot_cov(cov, info_fname, show=False)
         img = _fig_to_img(fig=fig)
         caption = 'Covariance : %s (n_samples: %s)' % (cov_fname, cov.nfree)
@@ -1346,17 +1516,50 @@ class Report(object):
                                          show=show)
         return html
 
-    def _render_trans(self, trans_fname, path, info, subject,
+    def _render_whitened_evoked(self, evoked_fname, noise_cov, baseline):
+        """Show whitened evoked.
+        """
+        global_id = self._get_id()
+
+        evokeds = read_evokeds(evoked_fname, verbose=False)
+
+        html = []
+        for ev in evokeds:
+
+            ev = read_evokeds(evoked_fname, ev.comment, baseline=baseline,
+                              verbose=False)
+
+            global_id = self._get_id()
+
+            kwargs = dict(noise_cov=noise_cov, show=False)
+            img = _fig_to_img(ev.plot_white, **kwargs)
+
+            caption = u'Whitened evoked : %s (%s)' % (evoked_fname, ev.comment)
+            div_klass = 'evoked'
+            img_klass = 'evoked'
+            show = True
+            html.append(image_template.substitute(img=img, id=global_id,
+                                                  div_klass=div_klass,
+                                                  img_klass=img_klass,
+                                                  caption=caption,
+                                                  show=show))
+        return '\n'.join(html)
+
+    def _render_trans(self, trans, path, info, subject,
                       subjects_dir, image_format='png'):
         """Render trans.
         """
-        kwargs = dict(info=info, trans_fname=trans_fname, subject=subject,
+        kwargs = dict(info=info, trans=trans, subject=subject,
                       subjects_dir=subjects_dir)
-        img = _iterate_trans_views(function=plot_trans, **kwargs)
+        try:
+            img = _iterate_trans_views(function=plot_trans, **kwargs)
+        except IOError:
+            img = _iterate_trans_views(function=plot_trans, source='head',
+                                       **kwargs)
 
         if img is not None:
             global_id = self._get_id()
-            caption = 'Trans : ' + trans_fname
+            caption = 'Trans : ' + trans
             div_klass = 'trans'
             img_klass = 'trans'
             show = True
@@ -1368,7 +1571,8 @@ class Report(object):
                                              show=show)
             return html
 
-    def _render_bem(self, subject, subjects_dir, decim, n_jobs):
+    def _render_bem(self, subject, subjects_dir, decim, n_jobs,
+                    section='mri', caption='BEM'):
         """Render mri+bem.
         """
         import nibabel as nib
@@ -1408,11 +1612,11 @@ class Report(object):
 
         global_id = self._get_id()
 
-        if 'mri' not in self.sections:
+        if section == 'mri' and 'mri' not in self.sections:
             self.sections.append('mri')
             self._sectionvars['mri'] = 'mri'
 
-        name = 'BEM'
+        name = caption
 
         html += u'<li class="mri" id="%d">\n' % global_id
         html += u'<h2>%s</h2>\n' % name
@@ -1434,10 +1638,9 @@ def _clean_varnames(s):
     # Remove invalid characters
     s = re.sub('[^0-9a-zA-Z_]', '', s)
 
-    # Remove leading characters until we find a letter or underscore
-    s = re.sub('^[^a-zA-Z_]+', '', s)
-
-    return s
+    # add report_ at the beginning so that the javascript class names
+    # are valid ones
+    return 'report_' + s
 
 
 def _recursive_search(path, pattern):

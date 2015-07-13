@@ -312,12 +312,12 @@ class RawSource(HasPrivateTraits):
         if self.points_filter is None:
             return 0
         else:
-            return np.sum(self.points_filter == False)
+            return np.sum(self.points_filter == False)  # noqa
 
     @cached_property
     def _get_raw(self):
         if self.file:
-            return Raw(self.file)
+            return Raw(self.file, allow_maxshield=True)
 
     @cached_property
     def _get_raw_dir(self):

@@ -15,7 +15,7 @@ from mne.time_frequency import morlet
 from mne.simulation import generate_sparse_stc, generate_evoked
 from mne import read_cov
 from mne.io import Raw
-from mne import pick_types_evoked, pick_types_forward, read_evokeds
+from mne import pick_types_forward, read_evokeds
 
 warnings.simplefilter('always')
 
@@ -43,8 +43,7 @@ def test_simulate_evoked():
                          '%s.label' % label)) for label in label_names]
 
     evoked_template = read_evokeds(ave_fname, condition=0, baseline=None)
-    evoked_template = pick_types_evoked(evoked_template, meg=True, eeg=True,
-                                        exclude=raw.info['bads'])
+    evoked_template.pick_types(meg=True, eeg=True, exclude=raw.info['bads'])
 
     snr = 6  # dB
     tmin = -0.1
@@ -77,6 +76,6 @@ def test_simulate_evoked():
     # make a vertex that doesn't exist in fwd, should throw error
     stc_bad = stc.copy()
     mv = np.max(fwd['src'][0]['vertno'][fwd['src'][0]['inuse']])
-    stc_bad.vertno[0][0] = mv + 1
+    stc_bad.vertices[0][0] = mv + 1
     assert_raises(RuntimeError, generate_evoked, fwd, stc_bad,
                   evoked_template, cov, snr, tmin=0.0, tmax=0.2)

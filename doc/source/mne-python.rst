@@ -8,10 +8,12 @@ MNE with Python
    :maxdepth: 1
 
    getting_started.rst
+   advanced_setup.rst
    python_tutorial.rst
    mne_report_tutorial.rst
    auto_examples/index.rst
    python_reference.rst
+   faq.rst
    whats_new.rst
    contributing.rst
 

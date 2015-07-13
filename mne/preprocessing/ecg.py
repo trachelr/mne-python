@@ -1,3 +1,9 @@
+# Authors: Alexandre Gramfort <alexandre.gramfort@telecom-paristech.fr>
+#          Denis Engemann <denis.engemann@gmail.com>
+#          Eric Larson <larson.eric.d@gmail.com>
+#
+# License: BSD (3-clause)
+
 import warnings
 from ..externals.six import string_types
 import numpy as np
@@ -83,8 +89,8 @@ def qrs_detector(sfreq, ecg, thresh_value=0.6, levels=2.5, n_thresh=3,
             if window[0] > thresh1:
                 max_time = np.argmax(window)
                 time.append(ii + max_time)
-                nx = np.sum(np.diff(((window > thresh1).astype(np.int)
-                                     == 1).astype(int)))
+                nx = np.sum(np.diff(((window > thresh1).astype(np.int) ==
+                                     1).astype(int)))
                 numcross.append(nx)
                 rms.append(np.sqrt(sum_squared(window) / window.size))
                 ii += win_size
@@ -106,8 +112,8 @@ def qrs_detector(sfreq, ecg, thresh_value=0.6, levels=2.5, n_thresh=3,
         clean_events.append(ce)
 
     # pick the best threshold; first get effective heart rates
-    rates = np.array([60. * len(ce) / (len(ecg) / float(sfreq))
-                      for ce in clean_events])
+    rates = np.array([60. * len(cev) / (len(ecg) / float(sfreq))
+                      for cev in clean_events])
 
     # now find heart rates that seem reasonable (infant thru adult athlete)
     idx = np.where(np.logical_and(rates <= 160., rates >= 40.))[0]
@@ -132,10 +138,11 @@ def find_ecg_events(raw, event_id=999, ch_name=None, tstart=0.0,
         The raw data
     event_id : int
         The index to assign to found events
-    ch_name : str
+    ch_name : None | str
         The name of the channel to use for ECG peak detection.
-        The argument is mandatory if the dataset contains no ECG
-        channels.
+        If None (default), a synthetic ECG channel is created from
+        cross channel average. Synthetic channel can only be created from
+        'meg' channels.
     tstart : float
         Start detection after tstart seconds. Useful when beginning
         of run is noisy.
@@ -211,7 +218,7 @@ def _get_ecg_channel_index(ch_name, inst):
 @verbose
 def create_ecg_epochs(raw, ch_name=None, event_id=999, picks=None,
                       tmin=-0.5, tmax=0.5, l_freq=8, h_freq=16, reject=None,
-                      flat=None, verbose=None, baseline=None):
+                      flat=None, baseline=None, verbose=None):
     """Conveniently generate epochs around ECG artifact events
 
 
@@ -219,10 +226,11 @@ def create_ecg_epochs(raw, ch_name=None, event_id=999, picks=None,
     ----------
     raw : instance of Raw
         The raw data
-    ch_name : str
+    ch_name : None | str
         The name of the channel to use for ECG peak detection.
-        The argument is mandatory if the dataset contains no ECG
-        channels.
+        If None (default), a synthetic ECG channel is created from
+        cross channel average. Synthetic channel can only be created from
+        'meg' channels.
     event_id : int
         The index to assign to found events
     picks : array-like of int | None (default)
@@ -236,14 +244,20 @@ def create_ecg_epochs(raw, ch_name=None, event_id=999, picks=None,
     h_freq : float
         High pass frequency.
     reject : dict | None
-        Rejection parameters based on peak to peak amplitude.
+        Rejection parameters based on peak-to-peak amplitude.
         Valid keys are 'grad' | 'mag' | 'eeg' | 'eog' | 'ecg'.
-        If reject is None then no rejection is done. You should
-        use such parameters to reject big measurement artifacts
-        and not ECG for example
+        If reject is None then no rejection is done. Example::
+
+            reject = dict(grad=4000e-13, # T / m (gradiometers)
+                          mag=4e-12, # T (magnetometers)
+                          eeg=40e-6, # uV (EEG channels)
+                          eog=250e-6 # uV (EOG channels)
+                          )
+
     flat : dict | None
-        Rejection parameters based on flatness of signal
-        Valid keys are 'grad' | 'mag' | 'eeg' | 'eog' | 'ecg'
+        Rejection parameters based on flatness of signal.
+        Valid keys are 'grad' | 'mag' | 'eeg' | 'eog' | 'ecg', and values
+        are floats that set the minimum acceptable peak-to-peak amplitude.
         If flat is None then no rejection is done.
     baseline : tuple or list of length 2, or None
         The time interval to apply rescaling / baseline correction.
@@ -258,14 +272,14 @@ def create_ecg_epochs(raw, ch_name=None, event_id=999, picks=None,
 
     Returns
     -------
-    eog_epochs : instance of Epochs
-        Data epoched around EOG events.
+    ecg_epochs : instance of Epochs
+        Data epoched around ECG r-peaks.
     """
 
     events, _, _ = find_ecg_events(raw, ch_name=ch_name, event_id=event_id,
                                    l_freq=l_freq, h_freq=h_freq,
                                    verbose=verbose)
-    if picks is not None:
+    if picks is None:
         picks = pick_types(raw.info, meg=True, eeg=True, ref_meg=False)
 
     # create epochs around ECG events and baseline (important)
@@ -280,7 +294,7 @@ def create_ecg_epochs(raw, ch_name=None, event_id=999, picks=None,
 def _make_ecg(inst, start, stop, verbose=None):
     """Create ECG signal from cross channel average
     """
-    if not any([c in inst for c in ['mag', 'grad']]):
+    if not any(c in inst for c in ['mag', 'grad']):
         raise ValueError('Unable to generate artifical ECG channel')
     for ch in ['mag', 'grad']:
         if ch in inst:

@@ -4,14 +4,23 @@
 # License: BSD (3-clause)
 
 import numpy as np
+from scipy import sparse
 from os import path as op
-from copy import deepcopy
 
 from .externals.six import string_types, text_type
 
 
 ##############################################################################
 # WRITE
+
+
+def _check_h5py():
+    """Helper to check if h5py is installed"""
+    try:
+        import h5py
+    except ImportError:
+        raise ImportError('the h5py module is required to use HDF5 I/O')
+    return h5py
 
 
 def _create_titled_group(root, key, title):
@@ -45,7 +54,7 @@ def write_hdf5(fname, data, overwrite=False, compression=4):
     compression : int
         Compression level to use (0-9) to compress data using gzip.
     """
-    import h5py
+    h5py = _check_h5py()
     if op.isfile(fname) and not overwrite:
         raise IOError('file "%s" exists, use overwrite=True to overwrite'
                       % fname)
@@ -53,21 +62,23 @@ def write_hdf5(fname, data, overwrite=False, compression=4):
     if compression > 0:
         comp_kw = dict(compression='gzip', compression_opts=compression)
     with h5py.File(fname, mode='w') as fid:
-        _triage_write('mnepython', data, fid, comp_kw)
+        _triage_write('mnepython', data, fid, comp_kw, str(type(data)))
 
 
-def _triage_write(key, value, root, comp_kw):
+def _triage_write(key, value, root, comp_kw, where):
     if isinstance(value, dict):
         sub_root = _create_titled_group(root, key, 'dict')
         for key, sub_value in value.items():
             if not isinstance(key, string_types):
                 raise TypeError('All dict keys must be strings')
-            _triage_write('key_{0}'.format(key), sub_value, sub_root, comp_kw)
+            _triage_write('key_{0}'.format(key), sub_value, sub_root, comp_kw,
+                          where + '["%s"]' % key)
     elif isinstance(value, (list, tuple)):
         title = 'list' if isinstance(value, list) else 'tuple'
         sub_root = _create_titled_group(root, key, title)
         for vi, sub_value in enumerate(value):
-            _triage_write('idx_{0}'.format(vi), sub_value, sub_root, comp_kw)
+            _triage_write('idx_{0}'.format(vi), sub_value, sub_root, comp_kw,
+                          where + '[%s]' % vi)
     elif isinstance(value, type(None)):
         _create_titled_dataset(root, key, 'None', [False])
     elif isinstance(value, (int, float)):
@@ -86,8 +97,16 @@ def _triage_write(key, value, root, comp_kw):
         _create_titled_dataset(root, key, title, value, comp_kw)
     elif isinstance(value, np.ndarray):
         _create_titled_dataset(root, key, 'ndarray', value)
+    elif isinstance(value, sparse.csc_matrix):
+        sub_root = _create_titled_group(root, key, 'csc_matrix')
+        _triage_write('data', value.data, sub_root, comp_kw,
+                      where + '.csc_matrix_data')
+        _triage_write('indices', value.indices, sub_root, comp_kw,
+                      where + '.csc_matrix_indices')
+        _triage_write('indptr', value.indptr, sub_root, comp_kw,
+                      where + '.csc_matrix_indptr')
     else:
-        raise TypeError('unsupported type %s' % type(value))
+        raise TypeError('unsupported type %s (in %s)' % (type(value), where))
 
 
 ##############################################################################
@@ -106,7 +125,7 @@ def read_hdf5(fname):
     data : object
         The loaded data. Can be of any type supported by ``write_hdf5``.
     """
-    import h5py
+    h5py = _check_h5py()
     if not op.isfile(fname):
         raise IOError('file "%s" not found' % fname)
     with h5py.File(fname, mode='r') as fid:
@@ -138,16 +157,17 @@ def _triage_read(node):
             assert len(data) == ii
             data = tuple(data) if type_str == 'tuple' else data
             return data
+        elif type_str == 'csc_matrix':
+            data = sparse.csc_matrix((_triage_read(node['data']),
+                                      _triage_read(node['indices']),
+                                      _triage_read(node['indptr'])))
         else:
             raise NotImplementedError('Unknown group type: {0}'
                                       ''.format(type_str))
     elif type_str == 'ndarray':
         data = np.array(node)
     elif type_str in ('int', 'float'):
-        if type_str == 'int':
-            cast = int
-        else:  # type_str == 'float':
-            cast = float
+        cast = int if type_str == 'int' else float
         data = cast(np.array(node)[0])
     elif type_str in ('unicode', 'ascii', 'str'):  # 'str' for backward compat
         decoder = 'utf-8' if type_str == 'unicode' else 'ASCII'
@@ -158,11 +178,3 @@ def _triage_read(node):
     else:
         raise TypeError('Unknown node type: {0}'.format(type_str))
     return data
-
-
-def _check_simplify_h5_info(info):
-    """Aux function"""
-    if 'orig_blocks' in info:
-        info = deepcopy(info)
-        del info['orig_blocks']
-    return info

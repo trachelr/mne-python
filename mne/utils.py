@@ -29,21 +29,17 @@ import atexit
 
 import numpy as np
 import scipy
-from scipy import linalg
+from scipy import linalg, sparse
 
 
 from .externals.six.moves import urllib
 from .externals.six import string_types, StringIO, BytesIO
 from .externals.decorator import decorator
 
+from .fixes import isclose
+
 logger = logging.getLogger('mne')  # one selection here used across mne-python
 logger.propagate = False  # don't propagate (in case of multiple imports)
-
-
-try:
-    from nose.plugins.skip import SkipTest
-except ImportError:
-    SkipTest = RuntimeError
 
 
 def _memory_usage(*args, **kwargs):
@@ -169,6 +165,17 @@ def object_diff(a, b, pre=''):
     elif isinstance(a, (StringIO, BytesIO)):
         if a.getvalue() != b.getvalue():
             out += pre + ' StringIO mismatch\n'
+    elif sparse.isspmatrix(a):
+        # sparsity and sparse type of b vs a already checked above by type()
+        if b.shape != a.shape:
+            out += pre + (' sparse matrix a and b shape mismatch'
+                          '(%s vs %s)' % (a.shape, b.shape))
+        else:
+            c = a - b
+            c.eliminate_zeros()
+            if c.nnz > 0:
+                out += pre + (' sparse matrix a and b differ on %s '
+                              'elements' % c.nnz)
     else:
         raise RuntimeError(pre + ': unsupported type %s (%s)' % (type(a), a))
     return out
@@ -261,11 +268,13 @@ class WrapStdOut(object):
 class _TempDir(str):
     """Class for creating and auto-destroying temp dir
 
-    This is designed to be used with testing modules.
+    This is designed to be used with testing modules. Instances should be
+    defined inside test functions. Instances defined at module level can not
+    guarantee proper destruction of the temporary directory.
 
-    We cannot simply use __del__() method for cleanup here because the rmtree
-    function may be cleaned up before this object, so we use the atexit module
-    instead.
+    When used at module level, the current use of the __del__() method for
+    cleanup can fail because the rmtree function may be cleaned up before this
+    object (an alternative could be using the atexit module instead).
     """
     def __new__(self):
         new = str.__new__(self, tempfile.mkdtemp())
@@ -279,7 +288,7 @@ class _TempDir(str):
 
 
 def estimate_rank(data, tol=1e-4, return_singular=False,
-                  copy=True):
+                  norm=True, copy=True):
     """Helper to estimate the rank of data
 
     This function will normalize the rows of the data (typically
@@ -298,6 +307,9 @@ def estimate_rank(data, tol=1e-4, return_singular=False,
     return_singular : bool
         If True, also return the singular values that were used
         to determine the rank.
+    norm : bool
+        If True, data will be scaled by their estimated row-wise norm.
+        Else data are assumed to be scaled. Defaults to True.
     copy : bool
         If False, values in data will be modified in-place during
         rank estimation (saves memory).
@@ -312,15 +324,22 @@ def estimate_rank(data, tol=1e-4, return_singular=False,
     """
     if copy is True:
         data = data.copy()
-    norms = np.sqrt(np.sum(data ** 2, axis=1))
-    norms[norms == 0] = 1.0
-    data /= norms[:, np.newaxis]
+    if norm is True:
+        norms = _compute_row_norms(data)
+        data /= norms[:, np.newaxis]
     s = linalg.svd(data, compute_uv=False, overwrite_a=True)
     rank = np.sum(s >= tol)
     if return_singular is True:
         return rank, s
     else:
         return rank
+
+
+def _compute_row_norms(data):
+    """Compute scaling based on estimated norm"""
+    norms = np.sqrt(np.sum(data ** 2, axis=1))
+    norms[norms == 0] = 1.0
+    return norms
 
 
 def _reject_data_segments(data, reject, flat, decim, info, tstep):
@@ -400,14 +419,20 @@ class deprecated(object):
 
     The optional extra argument will be appended to the deprecation message
     and the docstring. Note: to use this with the default value for extra, put
-    in an empty of parentheses:
+    in an empty of parentheses::
 
-    >>> from mne.utils import deprecated
-    >>> deprecated() # doctest: +ELLIPSIS
-    <mne.utils.deprecated object at ...>
+        >>> from mne.utils import deprecated
+        >>> deprecated() # doctest: +ELLIPSIS
+        <mne.utils.deprecated object at ...>
 
-    >>> @deprecated()
-    ... def some_function(): pass
+        >>> @deprecated()
+        ... def some_function(): pass
+
+
+    Parameters
+    ----------
+    extra: string
+        To be added to the deprecation messages.
     """
     # Adapted from http://wiki.python.org/moin/PythonDecoratorLibrary,
     # but with many changes.
@@ -416,16 +441,16 @@ class deprecated(object):
     # sklearn or scikits.learn, so a self-contained example is used above
 
     def __init__(self, extra=''):
-        """
-        Parameters
-        ----------
-        extra: string
-          to be added to the deprecation messages
-
-        """
         self.extra = extra
 
     def __call__(self, obj):
+        """Call
+
+        Parameters
+        ----------
+        obj : object
+            Object to call.
+        """
         if isinstance(obj, type):
             return self._decorate_class(obj)
         else:
@@ -480,25 +505,27 @@ class deprecated(object):
 def verbose(function, *args, **kwargs):
     """Improved verbose decorator to allow functions to override log-level
 
-    Do not call this directly to set global verbosrity level, instead use
+    Do not call this directly to set global verbosity level, instead use
     set_log_level().
 
     Parameters
     ----------
-    function - function
+    function : function
         Function to be decorated by setting the verbosity level.
 
     Returns
     -------
-    dec - function
+    dec : function
         The decorated function
     """
     arg_names = inspect.getargspec(function).args
     default_level = verbose_level = None
     if len(arg_names) > 0 and arg_names[0] == 'self':
         default_level = getattr(args[0], 'verbose', None)
-    if('verbose' in arg_names):
+    if 'verbose' in arg_names:
         verbose_level = args[arg_names.index('verbose')]
+    elif 'verbose' in kwargs:
+        verbose_level = kwargs.pop('verbose')
 
     # This ensures that object.method(verbose=None) will use object.verbose
     verbose_level = default_level if verbose_level is None else verbose_level
@@ -513,7 +540,34 @@ def verbose(function, *args, **kwargs):
     return function(*args, **kwargs)
 
 
+@nottest
+def slow_test(f):
+    """Decorator for slow tests"""
+    f.slow_test = True
+    return f
+
+
+@nottest
+def ultra_slow_test(f):
+    """Decorator for ultra slow tests"""
+    f.ultra_slow_test = True
+    f.slow_test = True
+    return f
+
+
 def has_nibabel(vox2ras_tkr=False):
+    """Determine if nibabel is installed
+
+    Parameters
+    ----------
+    vox2ras_tkr : bool
+        If True, require nibabel has vox2ras_tkr support.
+
+    Returns
+    -------
+    has : bool
+        True if the user has nibabel.
+    """
     try:
         import nibabel
         out = True
@@ -526,8 +580,14 @@ def has_nibabel(vox2ras_tkr=False):
         return False
 
 
-has_mne_c = lambda: 'MNE_ROOT' in os.environ
-has_freesurfer = lambda: 'FREESURFER_HOME' in os.environ
+def has_mne_c():
+    """Aux function"""
+    return 'MNE_ROOT' in os.environ
+
+
+def has_freesurfer():
+    """Aux function"""
+    return 'FREESURFER_HOME' in os.environ
 
 
 def requires_nibabel(vox2ras_tkr=False):
@@ -545,6 +605,11 @@ def requires_scipy_version(min_version):
 
 def requires_module(function, name, call):
     """Decorator to skip test if package is not available"""
+    try:
+        from nose.plugins.skip import SkipTest
+    except ImportError:
+        SkipTest = AssertionError
+
     @wraps(function)
     def dec(*args, **kwargs):
         skip = False
@@ -575,10 +640,7 @@ if version < required_version:
 """
 
 _mayavi_call = """
-try:
-    from mayavi import mlab
-except ImportError:
-    from enthought.mayavi import mlab
+from mayavi import mlab
 mlab.options.backend = 'test'
 """
 
@@ -723,7 +785,7 @@ def run_subprocess(command, verbose=None, *args, **kwargs):
                "that you use '$HOME' instead of '~'.")
         warnings.warn(msg)
 
-    logger.info("Running subprocess: %s" % str(command))
+    logger.info("Running subprocess: %s" % ' '.join(command))
     try:
         p = subprocess.Popen(command, *args, **kwargs)
     except Exception:
@@ -780,7 +842,7 @@ def set_log_level(verbose=None, return_old_level=False):
         logging_types = dict(DEBUG=logging.DEBUG, INFO=logging.INFO,
                              WARNING=logging.WARNING, ERROR=logging.ERROR,
                              CRITICAL=logging.CRITICAL)
-        if not verbose in logging_types:
+        if verbose not in logging_types:
             raise ValueError('verbose must be of a valid type')
         verbose = logging_types[verbose]
     logger = logging.getLogger('mne')
@@ -799,7 +861,9 @@ def set_log_file(fname=None, output_format='%(message)s', overwrite=None):
         To suppress log outputs, use set_log_level('WARN').
     output_format : str
         Format of the output messages. See the following for examples:
-            http://docs.python.org/dev/howto/logging.html
+
+            https://docs.python.org/dev/howto/logging.html
+
         e.g., "%(asctime)s - %(levelname)s - %(message)s".
     overwrite : bool, or None
         Overwrite the log file (if it exists). Otherwise, statements
@@ -958,6 +1022,7 @@ known_config_types = [
     'MNE_DATA',
     'MNE_DATASETS_MEGSIM_PATH',
     'MNE_DATASETS_SAMPLE_PATH',
+    'MNE_DATASETS_SOMATO_PATH',
     'MNE_DATASETS_SPM_FACE_PATH',
     'MNE_DATASETS_EEGBCI_PATH',
     'MNE_DATASETS_TESTING_PATH',
@@ -1054,7 +1119,7 @@ def set_config(key, value, home_dir=None):
     # settings using env, which are strings, so we enforce that here
     if not isinstance(value, string_types) and value is not None:
         raise TypeError('value must be a string or None')
-    if not key in known_config_types and not \
+    if key not in known_config_types and not \
             any(k in key for k in known_config_wildcards):
         warnings.warn('Setting non-standard config type: "%s"' % key)
 
@@ -1151,7 +1216,7 @@ class ProgressBar(object):
         # Ensure floating-point division so we can get fractions of a percent
         # for the progressbar.
         self.cur_value = cur_value
-        progress = float(self.cur_value) / self.max_value
+        progress = min(float(self.cur_value) / self.max_value, 1.)
         num_chars = int(progress * self.max_chars)
         num_left = self.max_chars - num_chars
 
@@ -1195,8 +1260,7 @@ class ProgressBar(object):
         self.update(self.cur_value, mesg)
 
 
-def _chunk_read(response, local_file, chunk_size=65536, initial_size=0,
-                verbose_bool=True):
+def _chunk_read(response, local_file, initial_size=0, verbose_bool=True):
     """Download a file chunk by chunk and show advancement
 
     Can also be used when resuming downloads over http.
@@ -1207,10 +1271,13 @@ def _chunk_read(response, local_file, chunk_size=65536, initial_size=0,
         Response to the download request in order to get file size.
     local_file: file
         Hard disk file where data should be written.
-    chunk_size: integer, optional
-        Size of downloaded chunks. Default: 8192
     initial_size: int, optional
         If resuming, indicate the initial size of the file.
+
+    Notes
+    -----
+    The chunk size will be automatically adapted based on the connection
+    speed.
     """
     # Adapted from NISL:
     # https://github.com/nisl/tutorial/blob/master/nisl/datasets.py
@@ -1223,8 +1290,15 @@ def _chunk_read(response, local_file, chunk_size=65536, initial_size=0,
     progress = ProgressBar(total_size, initial_value=initial_size,
                            max_chars=40, spinner=True, mesg='downloading',
                            verbose_bool=verbose_bool)
+    chunk_size = 8192  # 2 ** 13
     while True:
+        t0 = time.time()
         chunk = response.read(chunk_size)
+        dt = time.time() - t0
+        if dt < 0.001:
+            chunk_size *= 2
+        elif dt > 0.5 and chunk_size > 8192:
+            chunk_size = chunk_size // 2
         if not chunk:
             if verbose_bool:
                 sys.stdout.write('\n')
@@ -1259,9 +1333,11 @@ def _chunk_read_ftp_resume(url, temp_file_name, local_file, verbose_bool=True):
     progress = ProgressBar(file_size, initial_value=local_file_size,
                            max_chars=40, spinner=True, mesg='downloading',
                            verbose_bool=verbose_bool)
+
     # Callback lambda function that will be passed the downloaded data
     # chunk and will write it to file and update the progress bar
-    chunk_write = lambda chunk: _chunk_write(chunk, local_file, progress)
+    def chunk_write(chunk):
+        return _chunk_write(chunk, local_file, progress)
     data.retrbinary(down_cmd, chunk_write)
     data.close()
     sys.stdout.write('\n')
@@ -1321,7 +1397,7 @@ def _fetch_file(url, file_name, print_destination=True, resume=True,
             local_file = open(temp_file_name, "ab")
             # Resuming HTTP and FTP downloads requires different procedures
             scheme = urllib.parse.urlparse(url).scheme
-            if scheme == 'http':
+            if scheme in ('http', 'https'):
                 local_file_size = os.path.getsize(temp_file_name)
                 # If the file exists, then only download the remainder
                 req = urllib.request.Request(url)
@@ -1413,7 +1489,7 @@ def _get_stim_channel(stim_channel):
             if not isinstance(stim_channel, string_types):
                 raise TypeError('stim_channel must be a str, list, or None')
             stim_channel = [stim_channel]
-        if not all([isinstance(s, string_types) for s in stim_channel]):
+        if not all(isinstance(s, string_types) for s in stim_channel):
             raise TypeError('stim_channel list must contain all strings')
         return stim_channel
 
@@ -1475,7 +1551,7 @@ def _check_pandas_index_arguments(index, defaults):
     """ Helper function to check pandas index arguments """
     if not any(isinstance(index, k) for k in (list, tuple)):
         index = [index]
-    invalid_choices = [e for e in index if not e in defaults]
+    invalid_choices = [e for e in index if e not in defaults]
     if invalid_choices:
         options = [', '.join(e) for e in [invalid_choices, defaults]]
         raise ValueError('[%s] is not an valid option. Valid index'
@@ -1505,6 +1581,8 @@ def _clean_names(names, remove_whitespace=False, before_dash=True):
             name = name.replace(' ', '')
         if '-' in name and before_dash:
             name = name.split('-')[0]
+        if name.endswith('_virtual'):
+            name = name[:-8]
         cleaned.append(name)
 
     return cleaned
@@ -1518,6 +1596,14 @@ def clean_warning_registry():
     for mod in list(sys.modules.values()):
         if mod.__class__.__name__ not in bad_names and hasattr(mod, reg):
             getattr(mod, reg).clear()
+    # hack to deal with old scipy/numpy in tests
+    if os.getenv('TRAVIS') == 'true' and sys.version.startswith('2.6'):
+        warnings.simplefilter('default')
+        try:
+            np.rank([])
+        except Exception:
+            pass
+        warnings.simplefilter('always')
 
 
 def _check_type_picks(picks):
@@ -1526,7 +1612,7 @@ def _check_type_picks(picks):
     if picks is None:
         pass
     elif isinstance(picks, list):
-        if not all([isinstance(i, int) for i in picks]):
+        if not all(isinstance(i, int) for i in picks):
             raise ValueError(err_msg)
         picks = np.array(picks)
     elif isinstance(picks, np.ndarray):
@@ -1538,7 +1624,7 @@ def _check_type_picks(picks):
 
 
 @nottest
-def run_tests_if_main(measure_mem=True):
+def run_tests_if_main(measure_mem=False):
     """Run tests in a given file if it is run as a script"""
     local_vars = inspect.currentframe().f_back.f_locals
     if not local_vars.get('__name__', '') == '__main__':
@@ -1549,7 +1635,8 @@ def run_tests_if_main(measure_mem=True):
         faulthandler.enable()
     except Exception:
         pass
-    mem = int(round(max(memory_usage(-1)))) if measure_mem else -1
+    with warnings.catch_warnings(record=True):  # memory_usage internal dep.
+        mem = int(round(max(memory_usage(-1)))) if measure_mem else -1
     if mem >= 0:
         print('Memory consumption after import: %s' % mem)
     t0 = time.time()
@@ -1568,7 +1655,8 @@ def run_tests_if_main(measure_mem=True):
             try:
                 t1 = time.time()
                 if measure_mem:
-                    mem = int(round(max(memory_usage((val, (), {})))))
+                    with warnings.catch_warnings(record=True):  # dep warn
+                        mem = int(round(max(memory_usage((val, (), {})))))
                 else:
                     val()
                     mem = -1
@@ -1646,3 +1734,46 @@ def _sphere_to_cartesian(theta, phi, r):
     x = rcos_phi * np.cos(theta)
     y = rcos_phi * np.sin(theta)
     return x, y, z
+
+
+def create_slices(start, stop, step=None, length=1):
+    """ Generate slices of time indexes
+
+    Parameters
+    ----------
+    start : int
+        Index where first slice should start.
+    stop : int
+        Index where last slice should maximally end.
+    length : int
+        Number of time sample included in a given slice.
+    step: int | None
+        Number of time samples separating two slices.
+        If step = None, step = length.
+
+    Returns
+    -------
+    slices : list
+        List of slice objects.
+    """
+
+    # default parameters
+    if step is None:
+        step = length
+
+    # slicing
+    slices = [slice(t, t + length, 1) for t in
+              range(start, stop - length + 1, step)]
+    return slices
+
+
+def _time_mask(times, tmin=None, tmax=None, strict=False):
+    """Helper to safely find sample boundaries"""
+    tmin = -np.inf if tmin is None else tmin
+    tmax = np.inf if tmax is None else tmax
+    mask = (times >= tmin)
+    mask &= (times <= tmax)
+    if not strict:
+        mask |= isclose(times, tmin)
+        mask |= isclose(times, tmax)
+    return mask

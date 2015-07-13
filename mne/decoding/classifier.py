@@ -88,6 +88,8 @@ class Scaler(TransformerMixin):
         ----------
         epochs_data : array, shape=(n_epochs, n_channels, n_times)
             The data.
+        y : None
+            Not used.
 
         Returns
         -------
@@ -122,8 +124,7 @@ class ConcatenateChannels(TransformerMixin):
         self.info = info
 
     def fit(self, epochs_data, y):
-        """Concatenates data from different channels into a single feature
-        vector
+        """Concatenate different channels into a single feature vector
 
         Parameters
         ----------
@@ -151,6 +152,8 @@ class ConcatenateChannels(TransformerMixin):
         ----------
         epochs_data : array, shape=(n_epochs, n_channels, n_times)
             The data.
+        y : None
+            Not used.
 
         Returns
         -------
@@ -198,8 +201,8 @@ class PSDEstimator(TransformerMixin):
         If not None, override default verbose level (see mne.verbose).
     """
     def __init__(self, sfreq=2 * np.pi, fmin=0, fmax=np.inf, bandwidth=None,
-                 adaptive=False, low_bias=True, n_jobs=1, normalization='length',
-                 verbose=None):
+                 adaptive=False, low_bias=True, n_jobs=1,
+                 normalization='length', verbose=None):
         self.sfreq = sfreq
         self.fmin = fmin
         self.fmax = fmax
@@ -239,6 +242,8 @@ class PSDEstimator(TransformerMixin):
         ----------
         epochs_data : array, shape=(n_epochs, n_channels, n_times)
             The data
+        y : None
+            Not used.
 
         Returns
         -------
@@ -276,13 +281,14 @@ class FilterEstimator(TransformerMixin):
 
     l_freq and h_freq are the frequencies below which and above which,
     respectively, to filter out of the data. Thus the uses are:
-        l_freq < h_freq: band-pass filter
-        l_freq > h_freq: band-stop filter
-        l_freq is not None, h_freq is None: low-pass filter
-        l_freq is None, h_freq is not None: high-pass filter
 
-    Note: If n_jobs > 1, more memory is required as "len(picks) * n_times"
-          additional time points need to be temporarily stored in memory.
+        - l_freq < h_freq: band-pass filter
+        - l_freq > h_freq: band-stop filter
+        - l_freq is not None, h_freq is None: low-pass filter
+        - l_freq is None, h_freq is not None: high-pass filter
+
+    If n_jobs > 1, more memory is required as "len(picks) * n_times"
+    additional time points need to be temporarily stored in memory.
 
     Parameters
     ----------
@@ -323,7 +329,7 @@ class FilterEstimator(TransformerMixin):
     """
     def __init__(self, info, l_freq, h_freq, picks=None, filter_length='10s',
                  l_trans_bandwidth=0.5, h_trans_bandwidth=0.5, n_jobs=1,
-                 method='fft', iir_params=None):
+                 method='fft', iir_params=None, verbose=None):
         self.info = info
         self.l_freq = l_freq
         self.h_freq = h_freq
@@ -342,6 +348,8 @@ class FilterEstimator(TransformerMixin):
         ----------
         epochs_data : array, shape=(n_epochs, n_channels, n_times)
             The data.
+        y : array
+            The label for each epoch.
 
         Returns
         -------
@@ -358,17 +366,25 @@ class FilterEstimator(TransformerMixin):
 
         if self.l_freq == 0:
             self.l_freq = None
-        if self.h_freq > (self.info['sfreq'] / 2.):
+        if self.h_freq is not None and self.h_freq > (self.info['sfreq'] / 2.):
             self.h_freq = None
+        if self.l_freq is not None and not isinstance(self.l_freq, float):
+            self.l_freq = float(self.l_freq)
+        if self.h_freq is not None and not isinstance(self.h_freq, float):
+            self.h_freq = float(self.h_freq)
 
-        if self.h_freq is not None and \
-                (self.l_freq is None or self.l_freq < self.h_freq) and \
-                self.h_freq < self.info['lowpass']:
+        if self.info['lowpass'] is None or (self.h_freq is not None and
+                                            (self.l_freq is None or
+                                             self.l_freq < self.h_freq) and
+                                            self.h_freq <
+                                            self.info['lowpass']):
             self.info['lowpass'] = self.h_freq
 
-        if self.l_freq is not None and \
-                (self.h_freq is None or self.l_freq < self.h_freq) and \
-                self.l_freq > self.info['highpass']:
+        if self.info['highpass'] is None or (self.l_freq is not None and
+                                             (self.h_freq is None or
+                                              self.l_freq < self.h_freq) and
+                                             self.l_freq >
+                                             self.info['highpass']):
             self.info['highpass'] = self.l_freq
 
         return self
@@ -380,6 +396,8 @@ class FilterEstimator(TransformerMixin):
         ----------
         epochs_data : array, shape=(n_epochs, n_channels, n_times)
             The data.
+        y : None
+            Not used.
 
         Returns
         -------
@@ -394,7 +412,7 @@ class FilterEstimator(TransformerMixin):
 
         if self.l_freq is None and self.h_freq is not None:
             epochs_data = \
-                low_pass_filter(epochs_data, self.fs, self.h_freq,
+                low_pass_filter(epochs_data, self.info['sfreq'], self.h_freq,
                                 filter_length=self.filter_length,
                                 trans_bandwidth=self.l_trans_bandwidth,
                                 method=self.method, iir_params=self.iir_params,

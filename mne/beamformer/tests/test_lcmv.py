@@ -11,7 +11,7 @@ from mne.datasets import testing
 from mne.beamformer import lcmv, lcmv_epochs, lcmv_raw, tf_lcmv
 from mne.beamformer._lcmv import _lcmv_source_power
 from mne.externals.six import advance_iterator
-from mne.utils import run_tests_if_main
+from mne.utils import run_tests_if_main, slow_test
 
 
 data_path = testing.data_path(download=False)
@@ -91,6 +91,7 @@ def _get_data(tmin=-0.1, tmax=0.15, all_forward=True, epochs=True,
         forward_surf_ori, forward_fixed, forward_vol
 
 
+@slow_test
 @testing.requires_testing_data
 def test_lcmv():
     """Test LCMV with evoked data and single trials
@@ -215,9 +216,9 @@ def test_lcmv_raw():
 
     # make sure we get an stc with vertices only in the lh
     vertno = [forward['src'][0]['vertno'], forward['src'][1]['vertno']]
-    assert_true(len(stc.vertno[0]) == len(np.intersect1d(vertno[0],
-                                                         label.vertices)))
-    assert_true(len(stc.vertno[1]) == 0)
+    assert_true(len(stc.vertices[0]) == len(np.intersect1d(vertno[0],
+                                                           label.vertices)))
+    assert_true(len(stc.vertices[1]) == 0)
 
 
 @testing.requires_testing_data
@@ -300,7 +301,7 @@ def test_tf_lcmv():
         raw_band.filter(l_freq, h_freq, method='iir', n_jobs=1, picks=picks)
         epochs_band = mne.Epochs(raw_band, epochs.events, epochs.event_id,
                                  tmin=tmin, tmax=tmax, baseline=None,
-                                 proj=True)
+                                 proj=True, picks=picks)
         with warnings.catch_warnings(record=True):  # not enough samples
             noise_cov = compute_covariance(epochs_band, tmin=tmin, tmax=tmin +
                                            win_length)
@@ -322,8 +323,9 @@ def test_tf_lcmv():
                                                       reg=reg, label=label)
                 source_power.append(stc_source_power.data)
 
-    stcs = tf_lcmv(epochs, forward, noise_covs, tmin, tmax, tstep, win_lengths,
-                   freq_bins, reg=reg, label=label)
+    with warnings.catch_warnings(record=True):
+        stcs = tf_lcmv(epochs, forward, noise_covs, tmin, tmax, tstep,
+                       win_lengths, freq_bins, reg=reg, label=label)
 
     assert_true(len(stcs) == len(freq_bins))
     assert_true(stcs[0].shape[1] == 4)

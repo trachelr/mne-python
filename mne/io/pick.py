@@ -27,7 +27,8 @@ def channel_type(info, idx):
     Returns
     -------
     type : 'grad' | 'mag' | 'eeg' | 'stim' | 'eog' | 'emg' | 'ecg'
-           'ref_meg' | 'resp' | 'exci' | 'ias' | 'syst'
+           'ref_meg' | 'resp' | 'exci' | 'ias' | 'syst' | 'misc'
+           'seeg' | 'chpi'
         Type of channel
     """
     kind = info['chs'][idx]['kind']
@@ -146,14 +147,14 @@ def pick_types(info, meg=True, eeg=False, stim=False, eog=False, ecg=False,
         gradiometer.
     eeg : bool
         If True include EEG channels.
+    stim : bool
+        If True include stimulus channels.
     eog : bool
         If True include EOG channels.
     ecg : bool
         If True include ECG channels.
     emg : bool
         If True include EMG channels.
-    stim : bool
-        If True include stimulus channels.
     ref_meg: bool | str
         If True include CTF / 4D reference channels. If 'auto', the reference
         channels are only included if compensations are present.
@@ -175,8 +176,8 @@ def pick_types(info, meg=True, eeg=False, stim=False, eog=False, ecg=False,
     include : list of string
         List of additional channels to include. If empty do not include any.
     exclude : list of string | str
-        List of channels to exclude. If empty do not exclude any (default).
-        If 'bads', exclude channels in info['bads'].
+        List of channels to exclude. If 'bads' (default), exclude channels
+        in info['bads'].
     selection : list of string
         Restrict sensor channels (MEG, EEG) to this list of channel names.
 
@@ -185,6 +186,12 @@ def pick_types(info, meg=True, eeg=False, stim=False, eog=False, ecg=False,
     sel : array of int
         Indices of good channels.
     """
+    # NOTE: Changes to this function's signature should also be changed in
+    # PickChannelsMixin
+    from .meas_info import Info
+    if not isinstance(info, Info):
+        raise TypeError('info must be an instance of Info, not %s'
+                        % type(info))
     nchan = info['nchan']
     pick = np.zeros(nchan, dtype=np.bool)
 
@@ -192,7 +199,7 @@ def pick_types(info, meg=True, eeg=False, stim=False, eog=False, ecg=False,
         raise ValueError('exclude must be a list of strings or "bads"')
     elif exclude == 'bads':
         exclude = info.get('bads', [])
-    elif not isinstance(exclude, list):
+    elif not isinstance(exclude, (list, tuple)):
         raise ValueError('exclude must either be "bads" or a list of strings.'
                          ' If only one channel is to be excluded, use '
                          '[ch_name] instead of passing ch_name.')
@@ -216,8 +223,8 @@ def pick_types(info, meg=True, eeg=False, stim=False, eog=False, ecg=False,
                     pick[k] = True
                 elif meg == 'planar2' and info['ch_names'][k].endswith('3'):
                     pick[k] = True
-            elif (meg == 'mag'
-                    and info['chs'][k]['unit'] == FIFF.FIFF_UNIT_T):
+            elif (meg == 'mag' and
+                  info['chs'][k]['unit'] == FIFF.FIFF_UNIT_T):
                 pick[k] = True
         elif kind == FIFF.FIFFV_EEG_CH and eeg:
             pick[k] = True
@@ -254,9 +261,9 @@ def pick_types(info, meg=True, eeg=False, stim=False, eog=False, ecg=False,
         # the selection only restricts these types of channels
         sel_kind = [FIFF.FIFFV_MEG_CH, FIFF.FIFFV_REF_MEG_CH,
                     FIFF.FIFFV_EEG_CH]
-        for k in np.where(pick == True)[0]:
-            if (info['chs'][k]['kind'] in sel_kind
-                and info['ch_names'][k] not in selection):
+        for k in np.where(pick == True)[0]:  # noqa
+            if (info['chs'][k]['kind'] in sel_kind and
+                    info['ch_names'][k] not in selection):
                 pick[k] = False
 
     myinclude = [info['ch_names'][k] for k in range(nchan) if pick[k]]
@@ -291,11 +298,16 @@ def pick_info(info, sel=[], copy=True):
         info = deepcopy(info)
 
     if len(sel) == 0:
-        raise ValueError('Warning : No channels match the selection.')
+        raise ValueError('No channels match the selection.')
 
     info['chs'] = [info['chs'][k] for k in sel]
     info['ch_names'] = [info['ch_names'][k] for k in sel]
     info['nchan'] = len(sel)
+
+    # Check if bads_channels are included, otherwise
+    # remove info['bads']
+    info['bads'] = [ch for ch in info['bads'] if ch in info['ch_names']]
+
     return info
 
 
@@ -352,68 +364,6 @@ def pick_channels_evoked(orig, include=[], exclude='bads'):
     return res
 
 
-def pick_types_evoked(orig, meg=True, eeg=False, stim=False, eog=False,
-                      ecg=False, emg=False, ref_meg=False, misc=False,
-                      resp=False, chpi=False, exci=False, ias=False,
-                      syst=False, seeg=False, include=[], exclude='bads'):
-    """Pick by channel type and names from evoked data
-
-    Parameters
-    ----------
-    info : dict
-        The measurement info
-    meg : bool or string
-        If True include all MEG channels. If False include None
-        If string it can be 'mag' or 'grad' to select only gradiometers
-        or magnetometers.
-    eeg : bool
-        If True include EEG channels
-    eog : bool
-        If True include EOG channels
-    ecg : bool
-        If True include ECG channels
-    emg : bool
-        If True include EMG channels
-    stim : bool
-        If True include stimulus channels
-    ref_meg : bool
-        If True include CTF / 4D reference channels
-    misc : bool
-        If True include miscellaneous analog channels
-    resp : bool
-        If True include response-trigger channel. For some MEG systems this
-        is separate from the stim channel.
-    chpi : bool
-        If True include continuous HPI coil channels.
-    exci : bool
-        Flux excitation channel used to be a stimulus channel.
-    ias : bool
-        Internal Active Shielding data (maybe on Triux only).
-    syst : bool
-        System status channel information (on Triux systems only).
-    seeg : bool
-        Stereotactic EEG channels
-    include : list of string
-        List of additional channels to include. If empty do not include any.
-    exclude : list of string | str
-        List of channels to exclude. If empty do not exclude any (default).
-        If 'bads', exclude channels in info['bads']. Defaults to 'bads'.
-
-    Returns
-    -------
-    res : instance of Evoked
-        Evoked data restricted to selected channels. If include and
-        exclude are None it returns orig without copy.
-    """
-    sel = pick_types(info=orig.info, meg=meg, eeg=eeg, stim=stim, eog=eog,
-                     ecg=ecg, emg=emg, ref_meg=ref_meg, misc=misc,
-                     resp=resp, chpi=chpi, exci=exci, ias=ias, syst=syst,
-                     seeg=seeg, include=include, exclude=exclude)
-
-    include_ch_names = [orig.ch_names[k] for k in sel]
-    return pick_channels_evoked(orig, include_ch_names)
-
-
 @verbose
 def pick_channels_forward(orig, include=[], exclude=[], verbose=None):
     """Pick channels from forward operator
@@ -439,39 +389,49 @@ def pick_channels_forward(orig, include=[], exclude=[], verbose=None):
     if len(include) == 0 and len(exclude) == 0:
         return orig
 
-    sel = pick_channels(orig['sol']['row_names'], include=include,
-                        exclude=exclude)
+    # Allow for possibility of channel ordering in forward solution being
+    # different from that of the M/EEG file it is based on.
+    sel_sol = pick_channels(orig['sol']['row_names'], include=include,
+                            exclude=exclude)
+    sel_info = pick_channels(orig['info']['ch_names'], include=include,
+                             exclude=exclude)
 
     fwd = deepcopy(orig)
 
+    # Check that forward solution and original data file agree on #channels
+    if len(sel_sol) != len(sel_info):
+        raise ValueError('Forward solution and functional data appear to '
+                         'have different channel names, please check.')
+
     #   Do we have something?
-    nuse = len(sel)
+    nuse = len(sel_sol)
     if nuse == 0:
         raise ValueError('Nothing remains after picking')
 
     logger.info('    %d out of %d channels remain after picking'
                 % (nuse, fwd['nchan']))
 
-    #   Pick the correct rows of the forward operator
-    fwd['sol']['data'] = fwd['sol']['data'][sel, :]
-    fwd['_orig_sol'] = fwd['_orig_sol'][sel, :]
+    #   Pick the correct rows of the forward operator using sel_sol
+    fwd['sol']['data'] = fwd['sol']['data'][sel_sol, :]
+    fwd['_orig_sol'] = fwd['_orig_sol'][sel_sol, :]
     fwd['sol']['nrow'] = nuse
 
-    ch_names = [fwd['sol']['row_names'][k] for k in sel]
+    ch_names = [fwd['sol']['row_names'][k] for k in sel_sol]
     fwd['nchan'] = nuse
     fwd['sol']['row_names'] = ch_names
 
-    fwd['info']['ch_names'] = [fwd['info']['ch_names'][k] for k in sel]
-    fwd['info']['chs'] = [fwd['info']['chs'][k] for k in sel]
+    # Pick the appropriate channel names from the info-dict using sel_info
+    fwd['info']['ch_names'] = [fwd['info']['ch_names'][k] for k in sel_info]
+    fwd['info']['chs'] = [fwd['info']['chs'][k] for k in sel_info]
     fwd['info']['nchan'] = nuse
     fwd['info']['bads'] = [b for b in fwd['info']['bads'] if b in ch_names]
 
     if fwd['sol_grad'] is not None:
-        fwd['sol_grad']['data'] = fwd['sol_grad']['data'][sel, :]
-        fwd['_orig_sol_grad'] = fwd['_orig_sol_grad'][sel, :]
+        fwd['sol_grad']['data'] = fwd['sol_grad']['data'][sel_sol, :]
+        fwd['_orig_sol_grad'] = fwd['_orig_sol_grad'][sel_sol, :]
         fwd['sol_grad']['nrow'] = nuse
         fwd['sol_grad']['row_names'] = [fwd['sol_grad']['row_names'][k]
-                                        for k in sel]
+                                        for k in sel_sol]
 
     return fwd
 
@@ -546,9 +506,55 @@ def pick_channels_cov(orig, include=[], exclude='bads'):
     sel = pick_channels(orig['names'], include=include, exclude=exclude)
     res = deepcopy(orig)
     res['dim'] = len(sel)
-    res['data'] = orig['data'][sel][:, sel]
+    if not res['diag']:
+        res['data'] = orig['data'][sel][:, sel]
+    else:
+        res['data'] = orig['data'][sel]
     res['names'] = [orig['names'][k] for k in sel]
     res['bads'] = [name for name in orig['bads'] if name in res['names']]
     res['eig'] = None
     res['eigvec'] = None
     return res
+
+
+def _picks_by_type(info, meg_combined=False, ref_meg=False):
+    """Get data channel indices as separate list of tuples
+    Parameters
+    ----------
+    info : instance of mne.measuerment_info.Info
+        The info.
+    meg_combined : bool
+        Whether to return combined picks for grad and mag.
+    ref_meg : bool
+        If True include CTF / 4D reference channels
+
+    Returns
+    -------
+    picks_list : list of tuples
+        The list of tuples of picks and the type string.
+    """
+    from ..channels.channels import _contains_ch_type
+    picks_list = []
+    has_mag, has_grad, has_eeg = [_contains_ch_type(info, k)
+                                  for k in ('mag', 'grad', 'eeg')]
+    if has_mag and (meg_combined is not True or not has_grad):
+        picks_list.append(
+            ('mag', pick_types(info, meg='mag', eeg=False, stim=False,
+             ref_meg=ref_meg))
+        )
+    if has_grad and (meg_combined is not True or not has_mag):
+        picks_list.append(
+            ('grad', pick_types(info, meg='grad', eeg=False, stim=False,
+             ref_meg=ref_meg))
+        )
+    if has_mag and has_grad and meg_combined is True:
+        picks_list.append(
+            ('meg', pick_types(info, meg=True, eeg=False, stim=False,
+             ref_meg=ref_meg))
+        )
+    if has_eeg:
+        picks_list.append(
+            ('eeg', pick_types(info, meg=False, eeg=True, stim=False,
+             ref_meg=ref_meg))
+        )
+    return picks_list

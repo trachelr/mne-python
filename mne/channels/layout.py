@@ -3,7 +3,7 @@
 #          Martin Luessi <mluessi@nmr.mgh.harvard.edu>
 #          Eric Larson <larson.eric.d@gmail.com>
 #          Marijn van Vliet <w.m.vanvliet@gmail.com>
-#          Jona Sassenhagen
+#          Jona Sassenhagen <jona.sassenhagen@gmail.com>
 #          Teon Brooks <teon.brooks@gmail.com>
 #
 # License: Simplified BSD
@@ -11,19 +11,15 @@
 import logging
 from collections import defaultdict
 from itertools import combinations
-import re
-import os
 import os.path as op
+
 import numpy as np
-from scipy.spatial.distance import pdist
+
+from ..transforms import _polar_to_cartesian, _cartesian_to_sphere
 from ..io.pick import pick_types
 from ..io.constants import FIFF
 from ..utils import _clean_names
 from ..externals.six.moves import map
-from .channels import _contains_ch_type
-from ..viz import plot_montage
-from ..transforms import (_sphere_to_cartesian, _polar_to_cartesian,
-                          _cartesian_to_sphere)
 
 
 class Layout(object):
@@ -114,7 +110,11 @@ def _read_lay(fname):
         names, pos, ids = [], [], []
         for line in f:
             splits = line.split()
-            cid, x, y, dx, dy, name = splits
+            if len(splits) == 7:
+                cid, x, y, dx, dy, chkind, nb = splits
+                name = chkind + ' ' + nb
+            else:
+                cid, x, y, dx, dy, name = splits
             pos.append(np.array([x, y, dx, dy], dtype=np.float))
             names.append(name)
             ids.append(int(cid))
@@ -195,8 +195,8 @@ def make_eeg_layout(info, radius=0.5, width=None, height=None, exclude='bads'):
         Height of sensor axes as a fraction of main figure height. By default,
         this will be the maximum height possible withough axes overlapping.
     exclude : list of string | str
-        List of channels to exclude. If empty do not exclude any (default).
-        If 'bads', exclude channels in info['bads'].
+        List of channels to exclude. If empty do not exclude any.
+        If 'bads', exclude channels in info['bads'] (default).
     Returns
     -------
     layout : Layout
@@ -312,8 +312,8 @@ def make_grid_layout(info, picks=None, n_col=None):
     y += 0.5
 
     # calculate pos
-    pos = np.c_[x - 0.5*width, y - 0.5*height, width * np.ones(size), height *
-                np.ones(size)]
+    pos = np.c_[x - 0.5 * width, y - 0.5 * height,
+                width * np.ones(size), height * np.ones(size)]
     box = (0, 1, 0, 1)
 
     layout = Layout(box=box, pos=pos, names=names, kind='grid-misc', ids=ids)
@@ -350,13 +350,12 @@ def find_layout(info, ch_type=None, exclude='bads'):
     coil_types = set([ch['coil_type'] for ch in chs])
     channel_types = set([ch['kind'] for ch in chs])
 
-    has_vv_mag = any([k in coil_types for k in [FIFF.FIFFV_COIL_VV_MAG_T1,
-                                                FIFF.FIFFV_COIL_VV_MAG_T2,
-                                                FIFF.FIFFV_COIL_VV_MAG_T3]])
-    has_vv_grad = any([k in coil_types for k in [FIFF.FIFFV_COIL_VV_PLANAR_T1,
-                                                 FIFF.FIFFV_COIL_VV_PLANAR_T2,
-                                                 FIFF.FIFFV_COIL_VV_PLANAR_T3]]
-                      )
+    has_vv_mag = any(k in coil_types for k in
+                     [FIFF.FIFFV_COIL_VV_MAG_T1, FIFF.FIFFV_COIL_VV_MAG_T2,
+                      FIFF.FIFFV_COIL_VV_MAG_T3])
+    has_vv_grad = any(k in coil_types for k in [FIFF.FIFFV_COIL_VV_PLANAR_T1,
+                                                FIFF.FIFFV_COIL_VV_PLANAR_T2,
+                                                FIFF.FIFFV_COIL_VV_PLANAR_T3])
     has_vv_meg = has_vv_mag and has_vv_grad
     has_vv_only_mag = has_vv_mag and not has_vv_grad
     has_vv_only_grad = has_vv_grad and not has_vv_mag
@@ -368,12 +367,13 @@ def find_layout(info, ch_type=None, exclude='bads'):
                        FIFF.FIFFV_COIL_CTF_OFFDIAG_REF_GRAD)
     has_CTF_grad = (FIFF.FIFFV_COIL_CTF_GRAD in coil_types or
                     (FIFF.FIFFV_MEG_CH in channel_types and
-                     any([k in ctf_other_types for k in coil_types])))
+                     any(k in ctf_other_types for k in coil_types)))
     # hack due to MNE-C bug in IO of CTF
-    n_kit_grads = len([ch for ch in chs
-                       if ch['coil_type'] == FIFF.FIFFV_COIL_KIT_GRAD])
+    n_kit_grads = sum(ch['coil_type'] == FIFF.FIFFV_COIL_KIT_GRAD
+                      for ch in chs)
 
-    has_any_meg = any([has_vv_mag, has_vv_grad, has_4D_mag, has_CTF_grad])
+    has_any_meg = any([has_vv_mag, has_vv_grad, has_4D_mag, has_CTF_grad,
+                       n_kit_grads])
     has_eeg_coils = (FIFF.FIFFV_COIL_EEG in coil_types and
                      FIFF.FIFFV_EEG_CH in channel_types)
     has_eeg_coils_and_meg = has_eeg_coils and has_any_meg
@@ -404,6 +404,8 @@ def find_layout(info, ch_type=None, exclude='bads'):
         layout_name = 'CTF-275'
     elif n_kit_grads == 157:
         layout_name = 'KIT-157'
+    elif n_kit_grads == 208:
+        layout_name = 'KIT-AD'
     else:
         return None
 
@@ -441,8 +443,13 @@ def _box_size(points, width=None, height=None, padding=0.0):
     height : float
         Height of the box
     """
-    xdiff = lambda a, b: np.abs(a[0] - b[0])
-    ydiff = lambda a, b: np.abs(a[1] - b[1])
+    from scipy.spatial.distance import pdist
+
+    def xdiff(a, b):
+        return np.abs(a[0] - b[0])
+
+    def ydiff(a, b):
+        return np.abs(a[1] - b[1])
 
     points = np.asarray(points)
     all_combinations = list(combinations(points, 2))
@@ -549,6 +556,8 @@ def _auto_topomap_coords(info, picks):
     locs : array, shape = (n_sensors, 2)
         An array of positions of the 2 dimensional map.
     """
+    from scipy.spatial.distance import pdist
+
     chs = [info['chs'][i] for i in picks]
 
     # Use channel locations if available
@@ -713,213 +722,80 @@ def _merge_grad_data(data):
     return data
 
 
-class Montage(object):
-    """Montage for EEG cap
-
-    Montages are typically loaded from a file using read_montage. Only use this
-    class directly if you're constructing a new montage.
-
+def generate_2d_layout(xy, w=.07, h=.05, pad=.02, ch_names=None,
+                       ch_indices=None, name='ecog', bg_image=None):
+    """Generate a custom 2D layout from xy points.
+    Generates a 2-D layout for plotting with plot_topo methods and
+    functions. XY points will be normalized between 0 and 1, where
+    normalization extremes will be either the min/max of xy, or
+    the width/height of bg_image.
     Parameters
-    ----------
-    pos : array, shape (n_channels, 3)
-        The positions of the channels in 3d.
+    -------
+    xy : ndarray (N x 2)
+        The xy coordinates of sensor locations.
+    w : float
+        The width of each sensor's axis (between 0 and 1)
+    h : float
+        The height of each sensor's axis (between 0 and 1)
+    pad : float
+        Portion of the box to reserve for padding. The value can range between
+        0.0 (boxes will touch, default) to 1.0 (boxes consist of only padding).
     ch_names : list
-        The channel names.
-    kind : str
-        The type of montage (e.g. 'standard_1005').
-    selection : array of int
-        The indices of the selected channels in the montage file.
-    """
-    def __init__(self, pos, ch_names, kind, selection):
-        self.pos = pos
-        self.ch_names = ch_names
-        self.kind = kind
-        self.selection = selection
-
-    def __repr__(self):
-        s = '<Montage | %s - %d Channels: %s ...>'
-        s %= self.kind, len(self.ch_names), ', '.join(self.ch_names[:3])
-        return s
-
-    def plot(self, scale_factor=1.5, show_names=False):
-        """Plot EEG sensor montage
-
-        Parameters
-        ----------
-        scale_factor : float
-            Determines the size of the points. Defaults to 1.5
-        show_names : bool
-            Whether to show the channel names. Defaults to False
-
-        Returns
-        -------
-        fig : Instance of matplotlib.figure.Figure
-            The figure object.
-        """
-        return plot_montage(self, scale_factor=scale_factor,
-                            show_names=show_names)
-
-
-def read_montage(kind, ch_names=None, path=None, scale=True):
-    """Read montage from a file
-
-    Parameters
-    ----------
-    kind : str
-        The name of the montage file (e.g. kind='easycap-M10' for
-        'easycap-M10.txt'). Files with extensions '.elc', '.txt', '.csd',
-        '.elp', '.hpts' or '.sfp' are supported.
-    ch_names : list of str | None
-        The names to read. If None, all names are returned.
-    path : str | None
-        The path of the folder containing the montage file. Defaults to the
-        mne/channels/data/montages folder in your mne-python installation.
-    scale : bool
-        Apply useful scaling for out the box plotting using montage.pos.
-        Defaults to True.
-
+        The names of each channel. Must be a list of strings, with one
+        string per channel.
+    ch_indices : list
+        Index of each channel - must be a collection of unique integers,
+        one index per channel.
+    name : string
+        The name of this layout type.
+    bg_image : str | ndarray
+        The image over which sensor axes will be plotted. Either a path to an
+        image file, or an array that can be plotted with plt.imshow. If
+        provided, xy points will be normalized by the width/height of this
+        image. If not, xy points will be normalized by their own min/max.
     Returns
     -------
-    montage : instance of Montage
-        The montage.
+    layout : Layout
+        A Layout object that can be plotted with plot_topo
+        functions and methods.
+    Notes
+    -----
+    .. versionadded:: 0.9.0
     """
-    if path is None:
-        path = op.join(op.dirname(__file__), 'data', 'montages')
-    if not op.isabs(kind):
-        supported = ('.elc', '.txt', '.csd', '.sfp', '.elp', '.hpts')
-        montages = [op.splitext(f) for f in os.listdir(path)]
-        montages = [m for m in montages if m[1] in supported and kind == m[0]]
-        if len(montages) != 1:
-            raise ValueError('Could not find the montage. Please provide the '
-                             'full path.')
-        kind, ext = montages[0]
-        fname = op.join(path, kind + ext)
+    from scipy.ndimage import imread
+
+    if ch_indices is None:
+        ch_indices = np.arange(xy.shape[0])
+    if ch_names is None:
+        ch_names = ['{0}'.format(i) for i in ch_indices]
+
+    if len(ch_names) != len(ch_indices):
+        raise ValueError('# ch names and indices must be equal')
+    if len(ch_names) != len(xy):
+        raise ValueError('# ch names and xy vals must be equal')
+
+    x, y = xy.copy().astype(float).T
+
+    # Normalize xy to 0-1
+    if bg_image is not None:
+        # Normalize by image dimensions
+        if isinstance(bg_image, str):
+            img = imread(bg_image)
+        else:
+            img = bg_image
+        x /= img.shape[1]
+        y /= img.shape[0]
     else:
-        kind, ext = op.splitext(kind)
-        fname = op.join(path, kind + ext)
+        # Normalize x and y by their maxes
+        for i_dim in [x, y]:
+            i_dim -= i_dim.min(0)
+            i_dim /= (i_dim.max(0) - i_dim.min(0))
 
-    if ext == '.sfp':
-        # EGI geodesic
-        dtype = np.dtype('S4, f8, f8, f8')
-        data = np.loadtxt(fname, dtype=dtype)
-        pos = np.c_[data['f1'], data['f2'], data['f3']]
-        ch_names_ = data['f0'].astype(np.str)
-    elif ext == '.elc':
-        # 10-5 system
-        ch_names_ = []
-        pos = []
-        with open(fname) as fid:
-            for line in fid:
-                if 'Positions\n' in line:
-                    break
-            pos = []
-            for line in fid:
-                if 'Labels\n' in line:
-                    break
-                pos.append(list(map(float, line.split())))
-            for line in fid:
-                if not line or not set(line) - set([' ']):
-                    break
-                ch_names_.append(line.strip(' ').strip('\n'))
-        pos = np.array(pos)
-    elif ext == '.txt':
-        # easycap
-        data = np.genfromtxt(fname, dtype='str', skiprows=1)
-        ch_names_ = list(data[:, 0])
-        theta, phi = data[:, 1].astype(float), data[:, 2].astype(float)
-        x = 85. * np.cos(np.deg2rad(phi)) * np.sin(np.deg2rad(theta))
-        y = 85. * np.sin(np.deg2rad(theta)) * np.sin(np.deg2rad(phi))
-        z = 85. * np.cos(np.deg2rad(theta))
-        pos = np.c_[x, y, z]
-    elif ext == '.csd':
-        # CSD toolbox
-        dtype = [('label', 'S4'), ('theta', 'f8'), ('phi', 'f8'),
-                 ('radius', 'f8'), ('x', 'f8'), ('y', 'f8'), ('z', 'f8'),
-                 ('off_sph', 'f8')]
-        table = np.loadtxt(fname, skiprows=2, dtype=dtype)
-        ch_names_ = table['label']
-        theta = (2 * np.pi * table['theta']) / 360.
-        phi = (2 * np.pi * table['phi']) / 360.
-        pos = _sphere_to_cartesian(theta, phi, r=1.0)
-        pos = np.asarray(pos).T
-    elif ext == '.elp':
-        # standard BESA spherical
-        dtype = np.dtype('S8, S8, f8, f8, f8')
-        data = np.loadtxt(fname, dtype=dtype, skiprows=1)
+    # Create box and pos variable
+    box = _box_size(np.vstack([x, y]).T, padding=pad)
+    box = (0, 0, box[0], box[1])
+    w, h = [np.array([i] * x.shape[0]) for i in [w, h]]
+    loc_params = np.vstack([x, y, w, h]).T
 
-        az = data['f2']
-        horiz = data['f3']
-
-        radius = np.abs(az / 180.)
-        angles = np.array([90. - h if a >= 0. else -90. - h
-                           for h, a in zip(horiz, az)])
-
-        sph_phi = (0.5 - radius) * 180.
-        sph_theta = angles
-
-        azimuth = sph_theta / 180.0 * np.pi
-        elevation = sph_phi / 180.0 * np.pi
-        r = 85.
-
-        y, x, z = _sphere_to_cartesian(azimuth, elevation, r)
-
-        pos = np.c_[x, y, z]
-        ch_names_ = data['f1'].astype(np.str)
-    elif ext == '.hpts':
-        from ..transforms import get_ras_to_neuromag_trans, apply_trans
-        # MNE-C specified format for generic digitizer data
-        dtype = [('type', 'S8'), ('name', 'S8'),
-                 ('x', 'f8'), ('y','f8'), ('z', 'f8')]
-        data = np.loadtxt(fname, dtype=dtype)
-        pos_ = data[data['type'].astype(np.str) == 'eeg']
-        pos = np.vstack((pos_['x'], pos_['y'], pos_['z'])).T
-        ch_names_ = pos_['name'].astype(np.str)
-    else:
-        raise ValueError('Currently the "%s" template is not supported.' %
-                         kind)
-    selection = np.arange(len(pos))
-    if ch_names is not None:
-        sel, ch_names_ = zip(*[(i, e) for i, e in enumerate(ch_names_)
-                             if e in ch_names])
-        sel = list(sel)
-        pos = pos[sel]
-        selection = selection[sel]
-    else:
-        ch_names_ = list(ch_names_)
-    kind = op.split(kind)[-1]
-    return Montage(pos=pos, ch_names=ch_names_, kind=kind, selection=selection)
-
-
-def apply_montage(info, montage):
-    """Apply montage to EEG data.
-
-    This function will replace the EEG channel names and locations with
-    the values specified for the particular montage.
-
-    Note: This function will change the info variable in place.
-
-    Parameters
-    ----------
-    info : instance of Info
-        The measurement info to update.
-    montage : instance of Montage
-        The montage to apply.
-    """
-    if not _contains_ch_type(info, 'eeg'):
-        raise ValueError('No EEG channels found.')
-
-    sensors_found = False
-    for pos, ch_name in zip(montage.pos, montage.ch_names):
-        if ch_name not in info['ch_names']:
-            continue
-
-        ch_idx = info['ch_names'].index(ch_name)
-        info['ch_names'][ch_idx] = ch_name
-        info['chs'][ch_idx]['eeg_loc'] = np.c_[pos, [0.] * 3]
-        info['chs'][ch_idx]['loc'] = np.r_[pos, [0.] * 9]
-        sensors_found = True
-
-    if not sensors_found:
-        raise ValueError('None of the sensors defined in the montage were '
-                         'found in the info structure. Check the channel '
-                         'names.')
+    layout = Layout(box, loc_params, ch_names, ch_indices, name)
+    return layout

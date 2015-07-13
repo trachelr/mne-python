@@ -16,8 +16,6 @@ from warnings import warn
 
 import numpy as np
 from numpy import dot
-from scipy.optimize import leastsq
-from scipy.spatial.distance import cdist
 
 from .io.meas_info import read_fiducials, write_fiducials
 from .label import read_label, Label
@@ -25,8 +23,7 @@ from .source_space import (add_source_space_distances, read_source_spaces,
                            write_source_spaces)
 from .surface import (read_surface, write_surface, read_bem_surfaces,
                       write_bem_surface)
-from .transforms import (rotation, rotation3d, scaling, translation,
-                         get_ras_to_neuromag_trans)
+from .transforms import rotation, rotation3d, scaling, translation
 from .utils import get_config, get_subjects_dir, logger, pformat
 from functools import reduce
 from .externals.six.moves import zip
@@ -180,7 +177,7 @@ def _decimate_points(pts, res=10):
 
     Parameters
     ----------
-    pts : array, shape = (n_points, 3)
+    pts : array, shape (n_points, 3)
         The points making up the head shape.
     res : scalar
         The resolution of the voxel space (side length of each voxel).
@@ -190,6 +187,7 @@ def _decimate_points(pts, res=10):
     pts : array, shape = (n_points, 3)
         The decimated points.
     """
+    from scipy.spatial.distance import cdist
     pts = np.asarray(pts)
 
     # find the bin edges for the voxel space
@@ -310,6 +308,7 @@ def fit_matched_points(src_pts, tgt_pts, rotate=True, translate=True,
         A single tuple containing the translation, rotation and scaling
         parameters in that order.
     """
+    from scipy.optimize import leastsq
     src_pts = np.atleast_2d(src_pts)
     tgt_pts = np.atleast_2d(tgt_pts)
     if src_pts.shape != tgt_pts.shape:
@@ -401,6 +400,7 @@ def _point_cloud_error(src_pts, tgt_pts):
         For each point in ``src_pts``, the distance to the closest point in
         ``tgt_pts``.
     """
+    from scipy.spatial.distance import cdist
     Y = cdist(src_pts, tgt_pts, 'euclidean')
     dist = Y.min(axis=1)
     return dist
@@ -471,6 +471,7 @@ def fit_point_cloud(src_pts, tgt_pts, rotate=True, translate=True,
     the distance of each src_pt to the closest tgt_pt can be used as an
     estimate of the distance of src_pt to tgt_pts.
     """
+    from scipy.optimize import leastsq
     kwargs = {'epsfcn': 0.01}
     kwargs.update(leastsq_args)
 
@@ -714,30 +715,6 @@ def _mri_subject_has_bem(subject, subjects_dir=None):
     return bool(len(fnames))
 
 
-def read_elp(fname):
-    """Read point coordinates from a text file
-
-    Parameters
-    ----------
-    fname : str
-        Absolute path to laser point file (*.txt).
-
-    Returns
-    -------
-    elp_points : array, [n_points x 3]
-        Point coordinates.
-    """
-    pattern = re.compile(r'(\-?\d+\.\d+)\s+(\-?\d+\.\d+)\s+(\-?\d+\.\d+)')
-    with open(fname) as fid:
-        elp_points = pattern.findall(fid.read())
-    elp_points = np.array(elp_points, dtype=float)
-    if elp_points.shape[1] != 3:
-        raise ValueError("File %r does not contain 3 columns as required; got "
-                         "shape %s." % (fname, elp_points.shape))
-
-    return elp_points
-
-
 def read_mri_cfg(subject, subjects_dir=None):
     """Read information from the cfg file of a scaled MRI brain
 
@@ -812,7 +789,7 @@ def _write_mri_config(fname, subject_from, subject_to, scale):
 
 
 def _scale_params(subject_to, subject_from, scale, subjects_dir):
-    subjects_dir = get_subjects_dir(subjects_dir, True)
+    subjects_dir = get_subjects_dir(subjects_dir, raise_error=True)
     if (subject_from is None) != (scale is None):
         raise TypeError("Need to provide either both subject_from and scale "
                         "parameters, or neither.")
@@ -888,7 +865,7 @@ def scale_labels(subject_to, pattern=None, overwrite=False, subject_from=None,
     pattern : str | None
         Pattern for finding the labels relative to the label directory in the
         MRI subject directory (e.g., "lh.BA3a.label" will scale
-        "fsaverage/label/lh.BA3a.label"; "aparc/*.label" will find all labels
+        "fsaverage/label/lh.BA3a.label"; "aparc/\*.label" will find all labels
         in the "fsaverage/label/aparc" directory). With None, scale all labels.
     overwrite : bool
         Overwrite any label file that already exists for subject_to (otherwise

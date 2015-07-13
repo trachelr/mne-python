@@ -78,7 +78,7 @@ def test_find_events():
                                      include=stim_channel)
 
     # Reset some data for ease of comparison
-    raw.first_samp = 0
+    raw._first_samps[0] = 0
     raw.info['sfreq'] = 1000
     # Test that we can handle consecutive events with no gap
     raw._data[stim_channel_idx, :] = 0
@@ -86,6 +86,7 @@ def test_find_events():
     raw._data[stim_channel_idx, 520:530] = 6
     raw._data[stim_channel_idx, 530:532] = 5
     raw._data[stim_channel_idx, 540] = 6
+    raw._update_times()
 
     # consecutive=False
     find_events = dict(consecutive=False)

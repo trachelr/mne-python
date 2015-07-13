@@ -3,6 +3,7 @@ from nose.tools import assert_true, assert_raises, assert_not_equal
 from copy import deepcopy
 import os.path as op
 import numpy as np
+from scipy import sparse
 import os
 import warnings
 
@@ -14,10 +15,12 @@ from mne.utils import (set_log_level, set_log_file, _TempDir,
                        requires_good_network, run_tests_if_main, md5sum,
                        ArgvSetter, _memory_usage, check_random_state,
                        _check_mayavi_version, requires_mayavi,
-                       set_memmap_min_size, _get_stim_channel, _check_fname)
+                       set_memmap_min_size, _get_stim_channel, _check_fname,
+                       create_slices, _time_mask)
 from mne.io import show_fiff
 from mne import Evoked
 from mne.externals.six.moves import StringIO
+
 
 warnings.simplefilter('always')  # enable b/c these tests throw warnings
 
@@ -157,6 +160,18 @@ def test_hash():
     d2[1] = (x for x in d0)
     assert_raises(RuntimeError, object_diff, d1, d2)
     assert_raises(RuntimeError, object_hash, d1)
+
+    x = sparse.eye(2, 2, format='csc')
+    y = sparse.eye(2, 2, format='csr')
+    assert_true('type mismatch' in object_diff(x, y))
+    y = sparse.eye(2, 2, format='csc')
+    assert_equal(len(object_diff(x, y)), 0)
+    y[1, 1] = 2
+    assert_true('elements' in object_diff(x, y))
+    y = sparse.eye(3, 3, format='csc')
+    assert_true('shape' in object_diff(x, y))
+    y = 0
+    assert_true('type mismatch' in object_diff(x, y))
 
 
 def test_md5sum():
@@ -309,7 +324,7 @@ def test_show_fiff():
     keys = ['FIFF_EPOCH', 'FIFFB_HPI_COIL', 'FIFFB_PROJ_ITEM',
             'FIFFB_PROCESSED_DATA', 'FIFFB_EVOKED', 'FIFF_NAVE',
             'FIFF_EPOCH']
-    assert_true(all([key in info for key in keys]))
+    assert_true(all(key in info for key in keys))
     info = show_fiff(fname_raw, read_limit=1024)
 
 
@@ -320,6 +335,7 @@ def deprecated_func():
 
 @deprecated('message')
 class deprecated_class(object):
+
     def __init__(self):
         pass
 
@@ -397,5 +413,50 @@ def test_check_type_picks():
     picks = 'b'
     assert_raises(ValueError, _check_type_picks, picks)
 
+
+def test_create_slices():
+    """Test checking the create of time create_slices
+    """
+    # Test that create_slices default provide an empty list
+    assert_true(create_slices(0, 0) == [])
+    # Test that create_slice return correct number of slices
+    assert_true(len(create_slices(0, 100)) == 100)
+    # Test with non-zero start parameters
+    assert_true(len(create_slices(50, 100)) == 50)
+    # Test slices' length with non-zero start and window_width=2
+    assert_true(len(create_slices(0, 100, length=2)) == 50)
+    # Test slices' length with manual slice separation
+    assert_true(len(create_slices(0, 100, step=10)) == 10)
+    # Test slices' within length for non-consecutive samples
+    assert_true(len(create_slices(0, 500, length=50, step=10)) == 46)
+    # Test that slices elements start, stop and step correctly
+    slices = create_slices(0, 10)
+    assert_true(slices[0].start == 0)
+    assert_true(slices[0].step == 1)
+    assert_true(slices[0].stop == 1)
+    assert_true(slices[-1].stop == 10)
+    # Same with larger window width
+    slices = create_slices(0, 9, length=3)
+    assert_true(slices[0].start == 0)
+    assert_true(slices[0].step == 1)
+    assert_true(slices[0].stop == 3)
+    assert_true(slices[-1].stop == 9)
+    # Same with manual slices' separation
+    slices = create_slices(0, 9, length=3, step=1)
+    assert_true(len(slices) == 7)
+    assert_true(slices[0].step == 1)
+    assert_true(slices[0].stop == 3)
+    assert_true(slices[-1].start == 6)
+    assert_true(slices[-1].stop == 9)
+
+
+def test_time_mask():
+    """Test safe time masking
+    """
+    N = 10
+    x = np.arange(N).astype(float)
+    assert_equal(_time_mask(x, 0, N - 1).sum(), N)
+    assert_equal(_time_mask(x - 1e-10, 0, N - 1).sum(), N)
+    assert_equal(_time_mask(x - 1e-10, 0, N - 1, strict=True).sum(), N - 1)
 
 run_tests_if_main()

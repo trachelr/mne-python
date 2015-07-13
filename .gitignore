@@ -1,5 +1,6 @@
 *.pyc
 *.pyo
+*.sh
 *.so
 *.fif
 *.tar.gz
@@ -43,6 +44,7 @@ doc/build/
 doc/auto_examples/
 doc/modules/generated/
 doc/source/generated/
+doc/source/modules
 pip-log.txt
 .coverage
 tags

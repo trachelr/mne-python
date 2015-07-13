@@ -1,5 +1,5 @@
 import os.path as op
-from nose.tools import assert_true
+from nose.tools import assert_true, assert_raises
 import warnings
 
 import numpy as np
@@ -13,10 +13,13 @@ from mne.datasets import testing
 from mne import pick_types
 from mne.io import Raw
 from mne import compute_proj_epochs, compute_proj_evoked, compute_proj_raw
-from mne.io.proj import make_projector, activate_proj
-from mne.proj import read_proj, write_proj, make_eeg_average_ref_proj
+from mne.io.proj import (make_projector, activate_proj,
+                         _needs_eeg_average_ref_proj)
+from mne.proj import (read_proj, write_proj, make_eeg_average_ref_proj,
+                      _has_eeg_average_ref_proj)
 from mne import read_events, Epochs, sensitivity_map, read_source_estimate
-from mne.utils import _TempDir, run_tests_if_main, clean_warning_registry
+from mne.utils import (_TempDir, run_tests_if_main, clean_warning_registry,
+                       slow_test)
 
 warnings.simplefilter('always')  # enable b/c these tests throw warnings
 
@@ -151,12 +154,14 @@ def test_compute_proj_epochs():
     assert_equal(len(w), 2)
 
 
+@slow_test
 def test_compute_proj_raw():
     """Test SSP computation on raw"""
     tempdir = _TempDir()
     # Test that the raw projectors work
     raw_time = 2.5  # Do shorter amount for speed
-    raw = Raw(raw_fname, preload=True).crop(0, raw_time, False)
+    raw = Raw(raw_fname).crop(0, raw_time, False)
+    raw.preload_data()
     for ii in (0.25, 0.5, 1, 2):
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter('always')
@@ -216,5 +221,52 @@ def test_compute_proj_raw():
                                     bads=raw.ch_names)
     assert_array_almost_equal(proj, np.eye(len(raw.ch_names)))
 
+
+def test_make_eeg_average_ref_proj():
+    """Test EEG average reference projection"""
+    raw = Raw(raw_fname, add_eeg_ref=False, preload=True)
+    eeg = mne.pick_types(raw.info, meg=False, eeg=True)
+
+    # No average EEG reference
+    assert_true(not np.all(raw._data[eeg].mean(axis=0) < 1e-19))
+
+    # Apply average EEG reference
+    car = make_eeg_average_ref_proj(raw.info)
+    reref = raw.copy()
+    reref.add_proj(car)
+    reref.apply_proj()
+    assert_array_almost_equal(reref._data[eeg].mean(axis=0), 0, decimal=19)
+
+    # Error when custom reference has already been applied
+    raw.info['custom_ref_applied'] = True
+    assert_raises(RuntimeError, make_eeg_average_ref_proj, raw.info)
+
+
+def test_has_eeg_average_ref_proj():
+    """Test checking whether an EEG average reference exists"""
+    assert_true(not _has_eeg_average_ref_proj([]))
+
+    raw = Raw(raw_fname, add_eeg_ref=True, preload=False)
+    assert_true(_has_eeg_average_ref_proj(raw.info['projs']))
+
+
+def test_needs_eeg_average_ref_proj():
+    """Test checking whether a recording needs an EEG average reference"""
+    raw = Raw(raw_fname, add_eeg_ref=False, preload=False)
+    assert_true(_needs_eeg_average_ref_proj(raw.info))
+
+    raw = Raw(raw_fname, add_eeg_ref=True, preload=False)
+    assert_true(not _needs_eeg_average_ref_proj(raw.info))
+
+    # No EEG channels
+    raw = Raw(raw_fname, add_eeg_ref=False, preload=True)
+    eeg = [raw.ch_names[c] for c in pick_types(raw.info, meg=False, eeg=True)]
+    raw.drop_channels(eeg)
+    assert_true(not _needs_eeg_average_ref_proj(raw.info))
+
+    # Custom ref flag set
+    raw = Raw(raw_fname, add_eeg_ref=False, preload=False)
+    raw.info['custom_ref_applied'] = True
+    assert_true(not _needs_eeg_average_ref_proj(raw.info))
 
 run_tests_if_main()

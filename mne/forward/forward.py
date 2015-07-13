@@ -37,6 +37,7 @@ from ..epochs import Epochs
 from ..source_space import (_read_source_spaces_from_tree,
                             find_source_space_hemi,
                             _write_source_spaces_to_fid)
+from ..source_estimate import VolSourceEstimate
 from ..transforms import (transform_surface_to, invert_transform,
                           write_trans)
 from ..utils import (_check_fname, get_subjects_dir, has_mne_c,
@@ -346,6 +347,11 @@ def _read_forward_meas_info(tree, fid):
         raise ValueError('MEG/head coordinate transformation not found')
 
     info['bads'] = read_bad_channels(fid, parent_meg)
+
+    # Check if a custom reference has been applied
+    tag = find_tag(fid, parent_mri, FIFF.FIFF_CUSTOM_REF)
+    info['custom_ref_applied'] = bool(tag.data) if tag is not None else False
+
     return info
 
 
@@ -435,7 +441,7 @@ def read_forward_solution(fname, force_fixed=False, surf_ori=False,
             raise ValueError('No parent MRI information in %s' % fname)
         parent_mri = parent_mri[0]
 
-        src = _read_source_spaces_from_tree(fid, tree, add_geom=False)
+        src = _read_source_spaces_from_tree(fid, tree, patch_stats=False)
         for s in src:
             s['id'] = find_source_space_hemi(s)
 
@@ -485,8 +491,8 @@ def read_forward_solution(fname, force_fixed=False, surf_ori=False,
         if (mri_head_t['from'] != FIFF.FIFFV_COORD_MRI or
                 mri_head_t['to'] != FIFF.FIFFV_COORD_HEAD):
             mri_head_t = invert_transform(mri_head_t)
-            if (mri_head_t['from'] != FIFF.FIFFV_COORD_MRI
-                    or mri_head_t['to'] != FIFF.FIFFV_COORD_HEAD):
+            if (mri_head_t['from'] != FIFF.FIFFV_COORD_MRI or
+                    mri_head_t['to'] != FIFF.FIFFV_COORD_HEAD):
                 fid.close()
                 raise ValueError('MRI/head coordinate transformation not '
                                  'found')
@@ -598,8 +604,8 @@ def convert_forward_solution(fwd, surf_ori=False, force_fixed=False,
             fix_rot = _block_diag(fwd['source_nn'].T, 1)
             # newer versions of numpy require explicit casting here, so *= no
             # longer works
-            fwd['sol']['data'] = (fwd['_orig_sol']
-                                  * fix_rot).astype('float32')
+            fwd['sol']['data'] = (fwd['_orig_sol'] *
+                                  fix_rot).astype('float32')
             fwd['sol']['ncol'] = fwd['nsource']
             fwd['source_ori'] = FIFF.FIFFV_MNE_FIXED_ORI
 
@@ -1009,15 +1015,21 @@ def compute_depth_prior(G, gain_info, is_fixed_ori, exp=0.8, limit=10.0,
 def _stc_src_sel(src, stc):
     """ Select the vertex indices of a source space using a source estimate
     """
-    src_sel_lh = np.intersect1d(src[0]['vertno'], stc.vertno[0])
-    src_sel_lh = np.searchsorted(src[0]['vertno'], src_sel_lh)
-
-    src_sel_rh = np.intersect1d(src[1]['vertno'], stc.vertno[1])
-    src_sel_rh = (np.searchsorted(src[1]['vertno'], src_sel_rh)
-                  + len(src[0]['vertno']))
-
-    src_sel = np.r_[src_sel_lh, src_sel_rh]
-
+    if isinstance(stc, VolSourceEstimate):
+        vertices = [stc.vertices]
+    else:
+        vertices = stc.vertices
+    if not len(src) == len(vertices):
+        raise RuntimeError('Mismatch between number of source spaces (%s) and '
+                           'STC vertices (%s)' % (len(src), len(vertices)))
+    src_sels = []
+    offset = 0
+    for s, v in zip(src, vertices):
+        src_sel = np.intersect1d(s['vertno'], v)
+        src_sel = np.searchsorted(s['vertno'], src_sel)
+        src_sels.append(src_sel + offset)
+        offset += len(s['vertno'])
+    src_sel = np.concatenate(src_sels)
     return src_sel
 
 
@@ -1067,7 +1079,10 @@ def _apply_forward(fwd, stc, start=None, stop=None, verbose=None):
                       'currents are used.' % (1e9 * max_cur))
 
     src_sel = _stc_src_sel(fwd['src'], stc)
-    n_src = sum([len(v) for v in stc.vertno])
+    if isinstance(stc, VolSourceEstimate):
+        n_src = len(stc.vertices)
+    else:
+        n_src = sum([len(v) for v in stc.vertices])
     if len(src_sel) != n_src:
         raise RuntimeError('Only %i of %i SourceEstimate vertices found in '
                            'fwd' % (len(src_sel), n_src))
@@ -1101,7 +1116,7 @@ def apply_forward(fwd, stc, evoked_template, start=None, stop=None,
 
     Parameters
     ----------
-    forward : dict
+    fwd : dict
         Forward operator to use. Has to be fixed-orientation.
     stc : SourceEstimate
         The source estimate from which the sensor space data is computed.
@@ -1166,7 +1181,7 @@ def apply_forward_raw(fwd, stc, raw_template, start=None, stop=None,
 
     Parameters
     ----------
-    forward : dict
+    fwd : dict
         Forward operator to use. Has to be fixed-orientation.
     stc : SourceEstimate
         The source estimate from which the sensor space data is computed.
@@ -1202,18 +1217,16 @@ def apply_forward_raw(fwd, stc, raw_template, start=None, stop=None,
     raw = raw_template.copy()
     raw.preload = True
     raw._data = data
-    raw._times = times
 
-    sfreq = float(1.0 / stc.tstep)
-    raw.first_samp = int(np.round(raw._times[0] * sfreq))
-    raw.last_samp = raw.first_samp + raw._data.shape[1] - 1
+    sfreq = 1.0 / stc.tstep
+    raw._first_samps = np.array([int(np.round(times[0] * sfreq))])
+    raw._last_samps = np.array([raw.first_samp + raw._data.shape[1] - 1])
 
     # fill the measurement info
     raw.info = _fill_measurement_info(raw.info, fwd, sfreq)
-
     raw.info['projs'] = []
     raw._projector = None
-
+    raw._update_times()
     return raw
 
 
@@ -1249,12 +1262,12 @@ def restrict_forward_to_stc(fwd, stc):
     fwd_out['sol']['ncol'] = len(idx)
 
     for i in range(2):
-        fwd_out['src'][i]['vertno'] = stc.vertno[i]
-        fwd_out['src'][i]['nuse'] = len(stc.vertno[i])
+        fwd_out['src'][i]['vertno'] = stc.vertices[i]
+        fwd_out['src'][i]['nuse'] = len(stc.vertices[i])
         fwd_out['src'][i]['inuse'] = fwd['src'][i]['inuse'].copy()
         fwd_out['src'][i]['inuse'].fill(0)
-        fwd_out['src'][i]['inuse'][stc.vertno[i]] = 1
-        fwd_out['src'][i]['use_tris'] = np.array([])
+        fwd_out['src'][i]['inuse'][stc.vertices[i]] = 1
+        fwd_out['src'][i]['use_tris'] = np.array([], int)
         fwd_out['src'][i]['nuse_tri'] = np.array([0])
 
     return fwd_out
@@ -1287,11 +1300,11 @@ def restrict_forward_to_label(fwd, labels):
     fwd_out['sol']['ncol'] = 0
 
     for i in range(2):
-        fwd_out['src'][i]['vertno'] = np.array([])
+        fwd_out['src'][i]['vertno'] = np.array([], int)
         fwd_out['src'][i]['nuse'] = 0
         fwd_out['src'][i]['inuse'] = fwd['src'][i]['inuse'].copy()
         fwd_out['src'][i]['inuse'].fill(0)
-        fwd_out['src'][i]['use_tris'] = np.array([])
+        fwd_out['src'][i]['use_tris'] = np.array([], int)
         fwd_out['src'][i]['nuse_tri'] = np.array([0])
 
     for label in labels:
@@ -1302,8 +1315,8 @@ def restrict_forward_to_label(fwd, labels):
         else:
             i = 1
             src_sel = np.intersect1d(fwd['src'][1]['vertno'], label.vertices)
-            src_sel = (np.searchsorted(fwd['src'][1]['vertno'], src_sel)
-                       + len(fwd['src'][0]['vertno']))
+            src_sel = (np.searchsorted(fwd['src'][1]['vertno'], src_sel) +
+                       len(fwd['src'][0]['vertno']))
 
         fwd_out['source_rr'] = np.vstack([fwd_out['source_rr'],
                                           fwd['source_rr'][src_sel]])
@@ -1364,13 +1377,12 @@ def do_forward_solution(subject, meas, fname=None, src=None, spacing=None,
     bem : str | None
         Name of the BEM to use (e.g., "sample-5120-5120-5120"). If None
         (Default), the MNE default will be used.
-    trans : str | None
-        File name of the trans file. If None, mri must not be None.
-    mri : dict | str | None
-        Either a transformation (usually made using mne_analyze) or an
-        info dict (usually opened using read_trans()), or a filename.
-        If dict, the trans will be saved in a temporary directory. If
-        None, trans must not be None.
+    mri : str | None
+        The name of the trans file in FIF format.
+        If None, trans must not be None.
+    trans : dict | str | None
+        File name of the trans file in text format.
+        If None, mri must not be None.
     eeg : bool
         If True (Default), include EEG computations.
     meg : bool
@@ -1590,16 +1602,16 @@ def average_forward_solutions(fwds, weights=None):
         check_keys = ['info', 'sol_grad', 'nchan', 'src', 'source_nn', 'sol',
                       'source_rr', 'source_ori', 'surf_ori', 'coord_frame',
                       'mri_head_t', 'nsource']
-        if not all([key in fwd for key in check_keys]):
+        if not all(key in fwd for key in check_keys):
             raise KeyError('forward solution dict does not have all standard '
                            'entries, cannot compute average.')
 
     # check forward solution compatibility
-    if any([fwd['sol'][k] != fwds[0]['sol'][k]
-            for fwd in fwds[1:] for k in ['nrow', 'ncol']]):
+    if any(fwd['sol'][k] != fwds[0]['sol'][k]
+           for fwd in fwds[1:] for k in ['nrow', 'ncol']):
         raise ValueError('Forward solutions have incompatible dimensions')
-    if any([fwd[k] != fwds[0][k] for fwd in fwds[1:]
-            for k in ['source_ori', 'surf_ori', 'coord_frame']]):
+    if any(fwd[k] != fwds[0][k] for fwd in fwds[1:]
+           for k in ['source_ori', 'surf_ori', 'coord_frame']):
         raise ValueError('Forward solutions have incompatible orientations')
 
     # actually average them (solutions and gradients)

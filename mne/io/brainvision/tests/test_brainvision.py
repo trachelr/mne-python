@@ -1,14 +1,14 @@
 """Data Equivalence Tests"""
 from __future__ import print_function
 
-# Author: Teon Brooks <teon@nyu.edu>
+# Author: Teon Brooks <teon.brooks@gmail.com>
 #
 # License: BSD (3-clause)
 
 import os.path as op
 import inspect
 
-from nose.tools import assert_equal, assert_raises
+from nose.tools import assert_equal, assert_raises, assert_true
 import numpy as np
 from numpy.testing import assert_array_almost_equal, assert_array_equal
 
@@ -22,6 +22,7 @@ from mne.io import read_raw_brainvision
 FILE = inspect.getfile(inspect.currentframe())
 data_dir = op.join(op.dirname(op.abspath(FILE)), 'data')
 vhdr_path = op.join(data_dir, 'test.vhdr')
+vmrk_path = op.join(data_dir, 'test.vmrk')
 vhdr_highpass_path = op.join(data_dir, 'test_highpass.vhdr')
 montage = op.join(data_dir, 'test.hpts')
 eeg_bin = op.join(data_dir, 'test_bin_raw.fif')
@@ -32,17 +33,22 @@ def test_brainvision_data_filters():
     """Test reading raw Brain Vision files
     """
     raw = read_raw_brainvision(vhdr_highpass_path, montage, eog=eog,
-                               preload=False)
+                               preload=True)
     assert_equal(raw.info['highpass'], 0.1)
     assert_equal(raw.info['lowpass'], 250.)
+    raw.info["lowpass"] = None
+    raw.filter(1, 30)
 
 
 def test_brainvision_data():
     """Test reading raw Brain Vision files
     """
+    assert_raises(IOError, read_raw_brainvision, vmrk_path)
     assert_raises(TypeError, read_raw_brainvision, vhdr_path, montage,
                   preload=True, scale="0")
     raw_py = read_raw_brainvision(vhdr_path, montage, eog=eog, preload=True)
+    raw_py.preload_data()  # currently does nothing
+    assert_true('RawBrainVision' in repr(raw_py))
 
     assert_equal(raw_py.info['highpass'], 0.)
     assert_equal(raw_py.info['lowpass'], 250.)
@@ -157,13 +163,3 @@ def test_read_segment():
     raw3.save(raw3_file, buffer_size_sec=2)
     raw3 = Raw(raw3_file, preload=True)
     assert_array_equal(raw3._data, raw1._data)
-
-    # add reference channel
-    raw4_file = op.join(tempdir, 'test4-raw.fif')
-    raw4 = read_raw_brainvision(vhdr_path, eog=eog, reference='A1')
-    raw4.save(raw4_file, buffer_size_sec=2)
-    raw4 = Raw(raw4_file, preload=True)
-    ref_idx = raw4.ch_names.index('A1')
-    assert_equal(len(raw4._data), len(raw1._data) + 1)
-    ref_data, _ = raw4[ref_idx]
-    assert_array_equal(ref_data, 0)

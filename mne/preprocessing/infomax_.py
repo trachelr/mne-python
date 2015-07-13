@@ -7,7 +7,6 @@
 import math
 
 import numpy as np
-from scipy.stats import kurtosis
 
 from ..utils import logger, verbose, check_random_state
 
@@ -68,6 +67,7 @@ def infomax(data, weights=None, l_rate=None, block=None, w_change=1e-12,
     unmixing_matrix : np.ndarray of float, shape (n_features, n_features)
         The linear unmixing operator.
     """
+    from scipy.stats import kurtosis
     rng = check_random_state(random_state)
 
     # define some default parameter
@@ -136,7 +136,6 @@ def infomax(data, weights=None, l_rate=None, block=None, w_change=1e-12,
     while step < max_iter:
 
         # shuffle data at each step
-        rng.seed(step)  # --> permutation is fixed but differs at each step
         permute = list(range(n_samples))
         rng.shuffle(permute)
 

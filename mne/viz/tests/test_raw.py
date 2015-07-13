@@ -9,32 +9,17 @@ from numpy.testing import assert_raises
 
 from mne import io, read_events, pick_types
 from mne.utils import requires_scipy_version, run_tests_if_main
-
-warnings.simplefilter('always')  # enable b/c these tests throw warnings
+from mne.viz.utils import _fake_click
 
 # Set our plotters to test mode
 import matplotlib
 matplotlib.use('Agg')  # for testing don't use X server
-import matplotlib.pyplot as plt
 
+warnings.simplefilter('always')  # enable b/c these tests throw warnings
 
 base_dir = op.join(op.dirname(__file__), '..', '..', 'io', 'tests', 'data')
 raw_fname = op.join(base_dir, 'test_raw.fif')
 event_name = op.join(base_dir, 'test-eve.fif')
-
-
-def _fake_click(fig, ax, point, xform='ax'):
-    """Helper to fake a click at a relative point within axes"""
-    if xform == 'ax':
-        x, y = ax.transAxes.transform_point(point)
-    elif xform == 'data':
-        x, y = ax.transData.transform_point(point)
-    else:
-        raise ValueError('unknown transform')
-    try:
-        fig.canvas.button_press_event(x, y, 1, False, None)
-    except:  # for old MPL
-        fig.canvas.button_press_event(x, y, 1, False)
 
 
 def _get_raw():
@@ -50,6 +35,7 @@ def _get_events():
 def test_plot_raw():
     """Test plotting of raw data
     """
+    import matplotlib.pyplot as plt
     raw = _get_raw()
     events = _get_events()
     plt.close('all')  # ensure all are closed
@@ -67,23 +53,35 @@ def test_plot_raw():
         _fake_click(fig, fig.get_axes()[3], [0.5, 0.5])  # open SSP window
         fig.canvas.button_press_event(1, 1, 1)  # outside any axes
         # sadly these fail when no renderer is used (i.e., when using Agg):
-        #ssp_fig = set(plt.get_fignums()) - set([fig.number])
-        #assert_equal(len(ssp_fig), 1)
-        #ssp_fig = plt.figure(list(ssp_fig)[0])
-        #ax = ssp_fig.get_axes()[0]  # only one axis is used
-        #t = [c for c in ax.get_children() if isinstance(c,
-        #     matplotlib.text.Text)]
-        #pos = np.array(t[0].get_position()) + 0.01
-        #_fake_click(ssp_fig, ssp_fig.get_axes()[0], pos, xform='data')  # off
-        #_fake_click(ssp_fig, ssp_fig.get_axes()[0], pos, xform='data')  # on
-        # test keypresses
+        # ssp_fig = set(plt.get_fignums()) - set([fig.number])
+        # assert_equal(len(ssp_fig), 1)
+        # ssp_fig = plt.figure(list(ssp_fig)[0])
+        # ax = ssp_fig.get_axes()[0]  # only one axis is used
+        # t = [c for c in ax.get_children() if isinstance(c,
+        #      matplotlib.text.Text)]
+        # pos = np.array(t[0].get_position()) + 0.01
+        # _fake_click(ssp_fig, ssp_fig.get_axes()[0], pos, xform='data')  # off
+        # _fake_click(ssp_fig, ssp_fig.get_axes()[0], pos, xform='data')  # on
+        #  test keypresses
         fig.canvas.key_press_event('escape')
         fig.canvas.key_press_event('down')
         fig.canvas.key_press_event('up')
         fig.canvas.key_press_event('right')
         fig.canvas.key_press_event('left')
         fig.canvas.key_press_event('o')
+        fig.canvas.key_press_event('-')
+        fig.canvas.key_press_event('+')
+        fig.canvas.key_press_event('=')
+        fig.canvas.key_press_event('pageup')
+        fig.canvas.key_press_event('pagedown')
+        fig.canvas.key_press_event('home')
+        fig.canvas.key_press_event('end')
+        fig.canvas.key_press_event('f11')
         fig.canvas.key_press_event('escape')
+        # Color setting
+        assert_raises(KeyError, raw.plot, event_color={0: 'r'})
+        assert_raises(TypeError, raw.plot, event_color={'foo': 'r'})
+        fig = raw.plot(events=events, event_color={-1: 'r', 998: 'b'})
         plt.close('all')
 
 
@@ -102,20 +100,21 @@ def test_plot_raw_filtered():
     raw.plot(highpass=1, lowpass=2)
 
 
-def test_plot_raw_psds():
+@requires_scipy_version('0.12')
+def test_plot_raw_psd():
     """Test plotting of raw psds
     """
     import matplotlib.pyplot as plt
     raw = _get_raw()
     # normal mode
-    raw.plot_psds(tmax=2.0)
+    raw.plot_psd(tmax=2.0)
     # specific mode
     picks = pick_types(raw.info, meg='mag', eeg=False)[:4]
-    raw.plot_psds(picks=picks, area_mode='range')
+    raw.plot_psd(picks=picks, area_mode='range')
     ax = plt.axes()
     # if ax is supplied, picks must be, too:
-    assert_raises(ValueError, raw.plot_psds, ax=ax)
-    raw.plot_psds(picks=picks, ax=ax)
+    assert_raises(ValueError, raw.plot_psd, ax=ax)
+    raw.plot_psd(picks=picks, ax=ax)
     plt.close('all')
 
 

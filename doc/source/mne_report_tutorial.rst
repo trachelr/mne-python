@@ -45,10 +45,20 @@ To properly render `trans` and `covariance` files, add the measurement informati
     mne report --path MNE-sample-data/ --info MNE-sample-data/MEG/sample/sample_audvis-ave.fif \ 
         --subject sample --subjects-dir MNE-sample-data/subjects --verbose
 
+To render whitened `evoked` files with baseline correction, add the noise covariance file::
+    
+    mne report --path MNE-sample-data/ --info MNE-sample-data/MEG/sample/sample_audvis-ave.fif \ 
+        --cov MNE-sample-data/MEG/sample/sample_audvis-cov.fif --bmax 0 --subject sample \
+        --subjects-dir MNE-sample-data/subjects --verbose
+
 To generate the report in parallel::
 
     mne report --path MNE-sample-data/ --info MNE-sample-data/MEG/sample/sample_audvis-ave.fif \ 
         --subject sample --subjects-dir MNE-sample-data/subjects --verbose --jobs 6
+
+For help on all the available options, do::
+
+    mne report --help
 
 The Python interface
 --------------------
@@ -69,14 +79,25 @@ Generate the report:
     Embedding : jquery-ui.min.css
     Embedding : bootstrap.min.css
 
-Only include \*-eve.fif files in the report:
+Only include \*audvis_raw.fif and \*-eve.fif files in the report:
 
-    >>> report.parse_folder(data_path=path, pattern='*-eve.fif') # doctest: +SKIP
-    Rendering : .../MNE-sample-data/MEG/sample/sample_audvis_filt-0-40_raw-eve.fif
-    Rendering : .../MNE-sample-data/MEG/sample/sample_audvis_eog-eve.fif
-    Rendering : .../MNE-sample-data/MEG/sample/ernoise_raw-eve.fif
-    Rendering : .../MNE-sample-data/MEG/sample/sample_audvis_raw-eve.fif
-    Rendering : .../MNE-sample-data/MEG/sample/sample_audvis_ecg-eve.fif
+    >>> report.parse_folder(data_path=path, pattern=['*audvis_raw.fif', '*-eve.fif']) # doctest: +SKIP
+    Iterating over 6 potential files (this may take some time)
+    Rendering : /home/mainak/Desktop/projects/mne-python/examples/MNE-sample-data/MEG/sample/sample_audvis_raw.fif
+    Opening raw data file /home/mainak/Desktop/projects/mne-python/examples/MNE-sample-data/MEG/sample/sample_audvis_raw.fif...
+        Read a total of 3 projection items:
+            PCA-v1 (1 x 102)  idle
+            PCA-v2 (1 x 102)  idle
+            PCA-v3 (1 x 102)  idle
+    Current compensation grade : 0
+        Range : 25800 ... 192599 =     42.956 ...   320.670 secs
+    Ready.
+    Adding average EEG reference projection.
+    Rendering : /home/mainak/Desktop/projects/mne-python/examples/MNE-sample-data/MEG/sample/sample_audvis_filt-0-40_raw-eve.fif
+    Rendering : /home/mainak/Desktop/projects/mne-python/examples/MNE-sample-data/MEG/sample/sample_audvis_eog-eve.fif
+    Rendering : /home/mainak/Desktop/projects/mne-python/examples/MNE-sample-data/MEG/sample/ernoise_raw-eve.fif
+    Rendering : /home/mainak/Desktop/projects/mne-python/examples/MNE-sample-data/MEG/sample/sample_audvis_raw-eve.fif
+    Rendering : /home/mainak/Desktop/projects/mne-python/examples/MNE-sample-data/MEG/sample/sample_audvis_ecg-eve.fif
 
 Save the report as an html, but do not open the html in a browser:
 
@@ -89,7 +110,7 @@ Custom plots can be added to the report. Let us first generate a custom plot:
     >>> from mne import read_evokeds
     >>> fname = path + '/MEG/sample/sample_audvis-ave.fif'
     >>> evoked = read_evokeds(fname, condition='Left Auditory', baseline=(None, 0), verbose=True) # doctest:+ELLIPSIS
-    Reading .../MNE-sample-data/MEG/sample/sample_audvis-ave.fif ...
+    Reading ...
         Read a total of 4 projection items:
             PCA-v1 (1 x 102) active
             PCA-v2 (1 x 102) active
@@ -99,7 +120,7 @@ Custom plots can be added to the report. Let us first generate a custom plot:
             t =    -199.80 ...     499.49 ms (Left Auditory)
             0 CTF compensation matrices available
             nave = 55 - aspect type = 100
-    Projections have already been applied. Doing nothing.
+    Projections have already been applied. Setting proj attribute to True.
     Applying baseline correction ... (mode: mean)
     >>> fig = evoked.plot() # doctest: +SKIP
 

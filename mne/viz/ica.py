@@ -4,6 +4,7 @@ from __future__ import print_function
 
 # Authors: Denis Engemann <denis.engemann@gmail.com>
 #          Alexandre Gramfort <alexandre.gramfort@telecom-paristech.fr>
+#          Teon Brooks <teon.brooks@gmail.com>
 #
 # License: Simplified BSD
 
@@ -12,6 +13,7 @@ from functools import partial
 import numpy as np
 
 from .utils import tight_layout, _prepare_trellis
+from .evoked import _butterfly_on_button_press, _butterfly_onpick
 
 
 def _ica_plot_sources_onpick_(event, sources=None, ylims=None):
@@ -55,20 +57,20 @@ def plot_ica_sources(ica, inst, picks=None, exclude=None, start=None,
         The ICA solution.
     inst : instance of mne.io.Raw, mne.Epochs, mne.Evoked
         The object to plot the sources from.
-    picks : ndarray | None.
+    picks : int | array_like of int | None.
         The components to be displayed. If None, plot will show the
         sources in the order as fitted.
+    exclude : array_like of int
+        The components marked for exclusion. If None (default), ICA.exclude
+        will be used.
     start : int
         X-axis start index. If None from the beginning.
     stop : int
         X-axis stop index. If None to the end.
-    exclude : array_like of int
-        The components marked for exclusion. If None (default), ICA.exclude
-        will be used.
+    show : bool
+        Show figure if True.
     title : str | None
         The figure title. If None a default is provided.
-    show : bool
-        If True, all open plots will be shown.
 
     Returns
     -------
@@ -105,6 +107,7 @@ def plot_ica_sources(ica, inst, picks=None, exclude=None, start=None,
         if start is not None or stop is not None:
             inst = inst.crop(start, stop, copy=True)
         fig = _plot_ica_sources_evoked(evoked=sources,
+                                       picks=picks,
                                        exclude=exclude,
                                        title=title, show=show)
     else:
@@ -184,41 +187,80 @@ def _plot_ica_grid(sources, start, stop,
     return fig
 
 
-def _plot_ica_sources_evoked(evoked, exclude, title, show):
+def _plot_ica_sources_evoked(evoked, picks, exclude, title, show):
     """Plot average over epochs in ICA space
 
     Parameters
     ----------
-    ica : instance of mne.prerocessing.ICA
-        The ICA object.
-    epochs : instance of mne.Epochs
-        The Epochs to be regarded.
+    evoked : instance of mne.Evoked
+        The Evoked to be used.
+    picks : int | array_like of int | None.
+        The components to be displayed. If None, plot will show the
+        sources in the order as fitted.
+    exclude : array_like of int
+        The components marked for exclusion. If None (default), ICA.exclude
+        will be used.
     title : str
         The figure title.
     show : bool
-        If True, all open plots will be shown.
+        Show figure if True.
     """
     import matplotlib.pyplot as plt
     if title is None:
         title = 'Reconstructed latent sources, time-locked'
 
-    fig = plt.figure()
+    fig, axes = plt.subplots(1)
+    ax = axes
+    axes = [axes]
+    idxs = [0]
     times = evoked.times * 1e3
 
-    # plot unclassified sources
-    plt.plot(times, evoked.data.T, 'k')
-    for ii in exclude:
-        # use indexing to expose event related sources
-        color, label = ('r', 'ICA %02d' % ii)
-        plt.plot(times, evoked.data[ii].T, color='r', label=label)
+    # plot unclassified sources and label excluded ones
+    lines = list()
+    texts = list()
+    if picks is None:
+        picks = np.arange(evoked.data.shape[0])
+    idxs = [picks]
+    for ii in picks:
+        if ii in exclude:
+            label = 'ICA %03d' % (ii + 1)
+            lines.extend(ax.plot(times, evoked.data[ii].T, picker=3.,
+                         zorder=1, color='r', label=label))
+        else:
+            lines.extend(ax.plot(times, evoked.data[ii].T, picker=3.,
+                                 color='k', zorder=0))
 
-    plt.title(title)
-    plt.xlim(times[[0, -1]])
-    plt.xlabel('Time (ms)')
-    plt.ylabel('(NA)')
-    plt.legend(loc='best')
+    ax.set_title(title)
+    ax.set_xlim(times[[0, -1]])
+    ax.set_xlabel('Time (ms)')
+    ax.set_ylabel('(NA)')
+    if exclude:
+        plt.legend(loc='best')
     tight_layout(fig=fig)
 
+    # for old matplotlib, we actually need this to have a bounding
+    # box (!), so we have to put some valid text here, change
+    # alpha and  path effects later
+    texts.append(ax.text(0, 0, 'blank', zorder=2,
+                         verticalalignment='baseline',
+                         horizontalalignment='left',
+                         fontweight='bold', alpha=0))
+    # this is done to give the structure of a list of lists of a group of lines
+    # in each subplot
+    lines = [lines]
+    ch_names = evoked.ch_names
+
+    from matplotlib import patheffects
+    path_effects = [patheffects.withStroke(linewidth=2, foreground="w",
+                                           alpha=0.75)]
+    params = dict(axes=axes, texts=texts, lines=lines, idxs=idxs,
+                  ch_names=ch_names, need_draw=False,
+                  path_effects=path_effects)
+    fig.canvas.mpl_connect('pick_event',
+                           partial(_butterfly_onpick, params=params))
+    fig.canvas.mpl_connect('button_press_event',
+                           partial(_butterfly_on_button_press,
+                                   params=params))
     if show:
         plt.show()
 
@@ -249,7 +291,7 @@ def plot_ica_scores(ica, scores, exclude=None, axhline=None,
     figsize : tuple of int
         The figure size. Defaults to (12, 6).
     show : bool
-        If True, all open plots will be shown.
+        Show figure if True.
 
     Returns
     -------
@@ -287,12 +329,12 @@ def plot_ica_scores(ica, scores, exclude=None, axhline=None,
         ax.set_xlabel('ICA components')
         ax.set_xlim(0, len(this_scores))
 
-    if show:
-        plt.show()
-
     tight_layout(fig=fig)
     if len(axes) > 1:
         plt.subplots_adjust(top=0.9)
+
+    if show:
+        plt.show()
     return fig
 
 
@@ -300,10 +342,12 @@ def plot_ica_overlay(ica, inst, exclude=None, picks=None, start=None,
                      stop=None, title=None, show=True):
     """Overlay of raw and cleaned signals given the unmixing matrix.
 
-    This method helps visualizing signal quality and arficat rejection.
+    This method helps visualizing signal quality and artifact rejection.
 
     Parameters
     ----------
+    ica : instance of mne.preprocessing.ICA
+        The ICA object.
     inst : instance of mne.io.Raw or mne.Evoked
         The signals to be compared given the ICA solution. If Raw input,
         The raw data are displayed before and after cleaning. In a second
@@ -324,7 +368,7 @@ def plot_ica_overlay(ica, inst, exclude=None, picks=None, start=None,
     title : str
         The figure title.
     show : bool
-        If True, all open plots will be shown.
+        Show figure if True.
 
     Returns
     -------
@@ -337,7 +381,7 @@ def plot_ica_overlay(ica, inst, exclude=None, picks=None, start=None,
     from ..preprocessing.ica import _check_start_stop
 
     if not isinstance(inst, (_BaseRaw, Evoked)):
-        raise ValueError('Data input must be of Raw or Epochs type')
+        raise ValueError('Data input must be of Raw or Evoked type')
     if title is None:
         title = 'Signals before (red) and after (black) cleaning'
     if picks is None:
@@ -381,14 +425,14 @@ def _plot_ica_overlay_raw(data, data_cln, times, title, ch_types_used, show):
     epochs : instance of mne.Epochs
         The Epochs to be regarded.
     show : bool
-        If True, all open plots will be shown.
+        Show figure if True.
 
     Returns
     -------
     fig : instance of pyplot.Figure
     """
     import matplotlib.pyplot as plt
-        # Restore sensor space data and keep all PCA components
+    # Restore sensor space data and keep all PCA components
     # let's now compare the date before and after cleaning.
     # first the raw data
     assert data.shape == data_cln.shape
@@ -413,11 +457,11 @@ def _plot_ica_overlay_raw(data, data_cln, times, title, ch_types_used, show):
     ax2.set_xlim(times[0], times[-1])
     tight_layout(fig=fig)
 
-    if show:
-        plt.show()
-
     fig.subplots_adjust(top=0.90)
     fig.canvas.draw()
+
+    if show:
+        plt.show()
 
     return fig
 
@@ -459,9 +503,10 @@ def _plot_ica_overlay_evoked(evoked, evoked_cln, title, show):
     evoked_cln.plot(axes=axes, show=show)
     tight_layout(fig=fig)
 
+    fig.subplots_adjust(top=0.90)
+    fig.canvas.draw()
+
     if show:
         plt.show()
 
-    fig.subplots_adjust(top=0.90)
-    fig.canvas.draw()
     return fig

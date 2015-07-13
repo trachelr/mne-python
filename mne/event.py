@@ -3,7 +3,8 @@
 
 # Authors: Alexandre Gramfort <alexandre.gramfort@telecom-paristech.fr>
 #          Matti Hamalainen <msh@nmr.mgh.harvard.edu>
-#          Teon Brooks <teon@nyu.edu>
+#          Teon Brooks <teon.brooks@gmail.com>
+#          Clement Moutard <clement.moutard@polytechnique.org>
 #
 # License: BSD (3-clause)
 
@@ -19,11 +20,13 @@ from .io.write import write_int, start_block, start_file, end_block, end_file
 from .io.pick import pick_channels
 
 
-def pick_events(events, include=None, exclude=None):
+def pick_events(events, include=None, exclude=None, step=False):
     """Select some events
 
     Parameters
     ----------
+    events : ndarray
+        Array as returned by mne.find_events.
     include : int | list | None
         A event id to include or a list of them.
         If None all events are included.
@@ -31,6 +34,11 @@ def pick_events(events, include=None, exclude=None):
         A event id to exclude or a list of them.
         If None no event is excluded. If include is not None
         the exclude parameter is ignored.
+    step : bool
+        If True (default is False), events have a step format according
+        to the argument output='step' in the function find_events().
+        In this case, the two last columns are considered in inclusion/
+        exclusion criteria.
 
     Returns
     -------
@@ -43,6 +51,8 @@ def pick_events(events, include=None, exclude=None):
         mask = np.zeros(len(events), dtype=np.bool)
         for e in include:
             mask = np.logical_or(mask, events[:, 2] == e)
+            if step:
+                mask = np.logical_or(mask, events[:, 1] == e)
         events = events[mask]
     elif exclude is not None:
         if not isinstance(exclude, list):
@@ -50,6 +60,8 @@ def pick_events(events, include=None, exclude=None):
         mask = np.ones(len(events), dtype=np.bool)
         for e in exclude:
             mask = np.logical_and(mask, events[:, 2] != e)
+            if step:
+                mask = np.logical_and(mask, events[:, 1] != e)
         events = events[mask]
     else:
         events = np.copy(events)
@@ -337,10 +349,12 @@ def find_stim_steps(raw, pad_start=None, pad_stop=None, merge=0,
     ----------
     raw : Raw object
         The raw data.
-    pad_start, pad_stop : None | int
+    pad_start: None | int
         Values to assume outside of the stim channel (e.g., if pad_start=0 and
         the stim channel starts with value 5, an event of [0, 0, 5] will be
         inserted at the beginning). With None, no steps will be inserted.
+    pad_stop : None | int
+        Values to assume outside of the stim channel, see ``pad_start``.
     merge : int
         Merge steps occurring in neighboring samples. The integer value
         indicates over how many samples events should be merged, and the sign
@@ -502,20 +516,20 @@ def find_events(raw, stim_channel=None, verbose=None, output='onset',
     Consider data with a stim channel that looks like: [0, 32, 32, 33, 32, 0]
 
     By default, find_events returns all samples at which the value of the
-    stim channel increases:
+    stim channel increases::
 
         >>> print(find_events(raw)) # doctest: +SKIP
         [[ 1  0 32]
          [ 3 32 33]]
 
     If consecutive is False, find_events only returns the samples at which
-    the stim channel changes from zero to a non-zero value:
+    the stim channel changes from zero to a non-zero value::
 
         >>> print(find_events(raw, consecutive=False)) # doctest: +SKIP
         [[ 1  0 32]]
 
     If consecutive is True, find_events returns samples at which the
-    event changes, regardless of whether it first returns to zero:
+    event changes, regardless of whether it first returns to zero::
 
         >>> print(find_events(raw, consecutive=True)) # doctest: +SKIP
         [[ 1  0 32]
@@ -523,7 +537,7 @@ def find_events(raw, stim_channel=None, verbose=None, output='onset',
          [ 4 33 32]]
 
     If output is 'offset', find_events returns the last sample of each event
-    instead of the first one:
+    instead of the first one::
 
         >>> print(find_events(raw, consecutive=True, # doctest: +SKIP
         ...                   output='offset'))
@@ -532,7 +546,7 @@ def find_events(raw, stim_channel=None, verbose=None, output='onset',
          [ 4  0 32]]
 
     If output is 'step', find_events returns the samples at which an event
-    starts or ends:
+    starts or ends::
 
         >>> print(find_events(raw, consecutive=True, # doctest: +SKIP
         ...                   output='step'))
@@ -543,7 +557,7 @@ def find_events(raw, stim_channel=None, verbose=None, output='onset',
 
     To ignore spurious events, it is also possible to specify a minimum
     event duration. Assuming our events channel has a sample rate of
-    1000 Hz:
+    1000 Hz::
 
         >>> print(find_events(raw, consecutive=True, # doctest: +SKIP
         ...                   min_duration=0.002))
@@ -551,9 +565,9 @@ def find_events(raw, stim_channel=None, verbose=None, output='onset',
 
     For the digital mask, it will take the binary representation of the
     digital mask, e.g. 5 -> '00000101', and will block the values
-    where mask is one.
+    where mask is one, e.g.::
 
-    e.g.      7 '0000111' <- trigger value
+              7 '0000111' <- trigger value
              37 '0100101' <- mask
          ----------------
               2 '0000010'

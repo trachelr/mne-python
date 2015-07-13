@@ -10,9 +10,10 @@ from mne.commands import (mne_browse_raw, mne_bti2fiff, mne_clean_eog_ecg,
                           mne_compute_proj_ecg, mne_compute_proj_eog,
                           mne_coreg, mne_flash_bem_model, mne_kit2fiff,
                           mne_make_scalp_surfaces, mne_maxfilter,
-                          mne_report, mne_surf2bem)
+                          mne_report, mne_surf2bem, mne_watershed_bem)
 from mne.utils import (run_tests_if_main, _TempDir, requires_mne, requires_PIL,
-                       requires_mayavi, requires_tvtk, ArgvSetter)
+                       requires_mayavi, requires_tvtk, requires_freesurfer,
+                       ArgvSetter, slow_test, ultra_slow_test)
 from mne.io import Raw
 from mne.datasets import testing
 
@@ -36,6 +37,7 @@ def check_usage(module, force_help=False):
         assert_true('Usage: ' in out.stdout.getvalue())
 
 
+@slow_test
 def test_browse_raw():
     """Test mne browse_raw"""
     check_usage(mne_browse_raw)
@@ -63,6 +65,7 @@ def test_clean_eog_ecg():
     assert_true(len(fnames) == 3)  # raw plus two projs
 
 
+@slow_test
 def test_compute_proj_ecg_eog():
     """Test mne compute_proj_ecg/eog"""
     for fun in (mne_compute_proj_ecg, mne_compute_proj_eog):
@@ -153,6 +156,7 @@ def test_maxfilter():
             assert_true(check in out.stdout.getvalue(), check)
 
 
+@slow_test
 @requires_mayavi
 @requires_PIL
 @testing.requires_testing_data
@@ -172,6 +176,30 @@ def test_report():
 def test_surf2bem():
     """Test mne surf2bem"""
     check_usage(mne_surf2bem)
+
+
+@ultra_slow_test
+@requires_freesurfer
+@testing.requires_testing_data
+def test_watershed_bem():
+    """Test mne watershed bem"""
+    check_usage(mne_watershed_bem)
+    # Copy necessary files to tempdir
+    tempdir = _TempDir()
+    mridata_path = op.join(subjects_dir, 'sample', 'mri')
+    mridata_path_new = op.join(tempdir, 'sample', 'mri')
+    os.mkdir(op.join(tempdir, 'sample'))
+    os.mkdir(mridata_path_new)
+    if op.exists(op.join(mridata_path, 'T1')):
+        shutil.copytree(op.join(mridata_path, 'T1'), op.join(mridata_path_new,
+                        'T1'))
+    if op.exists(op.join(mridata_path, 'T1.mgz')):
+        shutil.copyfile(op.join(mridata_path, 'T1.mgz'),
+                        op.join(mridata_path_new, 'T1.mgz'))
+
+    with ArgvSetter(('-d', tempdir, '-s', 'sample', '-o'),
+                    disable_stdout=False, disable_stderr=False):
+        mne_watershed_bem.run()
 
 
 run_tests_if_main()

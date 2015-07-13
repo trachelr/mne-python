@@ -8,7 +8,8 @@ import os.path as op
 from functools import reduce
 
 import numpy as np
-from numpy.testing import assert_array_almost_equal, assert_array_equal
+from numpy.testing import (assert_array_almost_equal, assert_array_equal,
+                           assert_allclose)
 from nose.tools import assert_true, assert_raises, assert_equal
 
 from mne.io import Raw as Raw
@@ -37,8 +38,8 @@ def test_read_config():
     # for config in config_fname, config_solaris_fname:
     for config in config_fnames:
         cfg = _read_config(config)
-        assert_true(all([all([k not in block.lower() for k in ['', 'unknown']]
-                    for block in cfg['user_blocks'])]))
+        assert_true(all('unknown' not in block.lower() and block != ''
+                        for block in cfg['user_blocks']))
 
 
 def test_read_pdf():
@@ -50,9 +51,10 @@ def test_read_pdf():
         assert_true(data.shape == shape)
 
 
-def test_crop():
-    """ Test crop raw """
+def test_crop_append():
+    """ Test crop and append raw """
     raw = read_raw_bti(pdf_fnames[0], config_fnames[0], hs_fnames[0])
+    raw.preload_data()  # currently does nothing
     y, t = raw[:]
     t0, t1 = 0.25 * t[-1], 0.75 * t[-1]
     mask = (t0 <= t) * (t <= t1)
@@ -60,6 +62,11 @@ def test_crop():
     y_, _ = raw_[:]
     assert_true(y_.shape[1] == mask.sum())
     assert_true(y_.shape[0] == y.shape[0])
+
+    raw2 = raw.copy()
+    assert_raises(RuntimeError, raw.append, raw2, preload=False)
+    raw.append(raw2)
+    assert_allclose(np.tile(raw2[:, :][0], (1, 2)), raw[:, :][0])
 
 
 def test_raw():
@@ -74,6 +81,7 @@ def test_raw():
             os.remove(tmp_raw_fname)
         with Raw(exported, preload=True) as ex:
             with read_raw_bti(pdf, config, hs) as ra:
+                assert_true('RawBTi' in repr(ra))
                 assert_equal(ex.ch_names[:NCH], ra.ch_names[:NCH])
                 assert_array_almost_equal(ex.info['dev_head_t']['trans'],
                                           ra.info['dev_head_t']['trans'], 7)
@@ -92,7 +100,7 @@ def test_raw():
                 assert_array_equal(loc1, loc2)
 
                 assert_array_equal(ra._data[:NCH], ex._data[:NCH])
-                assert_array_equal(ra.cals[:NCH], ex.cals[:NCH])
+                assert_array_equal(ra._cals[:NCH], ex._cals[:NCH])
                 # Make sure concatenation works
                 raw_concat = concatenate_raws([ra.copy(), ra])
                 assert_equal(raw_concat.n_times, 2 * ra.n_times)

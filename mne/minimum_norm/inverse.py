@@ -1,5 +1,6 @@
 # Authors: Alexandre Gramfort <alexandre.gramfort@telecom-paristech.fr>
 #          Matti Hamalainen <msh@nmr.mgh.harvard.edu>
+#          Teon Brooks <teon.brooks@gmail.com>
 #
 # License: BSD (3-clause)
 
@@ -15,6 +16,7 @@ from ..io.tag import find_tag
 from ..io.matrix import (_read_named_matrix, _transpose_named_matrix,
                          write_named_matrix)
 from ..io.proj import _read_proj, make_projector, _write_proj
+from ..io.proj import _has_eeg_average_ref_proj
 from ..io.tree import dir_tree_find
 from ..io.write import (write_int, write_float_matrix, start_file,
                         start_block, end_block, end_file, write_float,
@@ -24,7 +26,7 @@ from ..io.pick import channel_type, pick_info, pick_types
 from ..cov import prepare_noise_cov, _read_cov, _write_cov
 from ..forward import (compute_depth_prior, _read_forward_meas_info,
                        write_forward_meas_info, is_fixed_orient,
-                       compute_orient_prior, _to_fixed_ori)
+                       compute_orient_prior, convert_forward_solution)
 from ..source_space import (_read_source_spaces_from_tree,
                             find_source_space_hemi, _get_vertno,
                             _write_source_spaces_to_fid, label_src_vertno_sel)
@@ -234,7 +236,8 @@ def read_inverse_operator(fname, verbose=None):
         #
         #   Read the source spaces
         #
-        inv['src'] = _read_source_spaces_from_tree(fid, tree, add_geom=False)
+        inv['src'] = _read_source_spaces_from_tree(fid, tree,
+                                                   patch_stats=False)
 
         for s in inv['src']:
             s['id'] = find_source_space_hemi(s)
@@ -284,8 +287,8 @@ def read_inverse_operator(fname, verbose=None):
         #
         inv['proj'] = []       # This is the projector to apply to the data
         inv['whitener'] = []   # This whitens the data
-        inv['reginv'] = []     # This the diagonal matrix implementing
-                               # regularization and the inverse
+        # This the diagonal matrix implementing regularization and the inverse
+        inv['reginv'] = []
         inv['noisenorm'] = []  # These are the noise-normalization factors
         #
         nuse = 0
@@ -696,24 +699,21 @@ def _check_method(method):
     return method
 
 
-def _check_ori(pick_ori, pick_normal):
-    if pick_normal is not None:
-        warnings.warn('DEPRECATION: The pick_normal parameter has been '
-                      'changed to pick_ori. Please update your code.')
-        pick_ori = pick_normal
-    if pick_ori is True:
-        warnings.warn('DEPRECATION: The pick_ori parameter should now be None '
-                      'or "normal".')
-        pick_ori = "normal"
-    elif pick_ori is False:
-        warnings.warn('DEPRECATION: The pick_ori parameter should now be None '
-                      'or "normal".')
-        pick_ori = None
-
-    if pick_ori not in [None, "normal"]:
-        raise ValueError('The pick_ori parameter should now be None or '
-                         '"normal".')
+def _check_ori(pick_ori):
+    if pick_ori is not None and pick_ori != 'normal':
+        raise RuntimeError('pick_ori must be None or "normal", not %s'
+                           % pick_ori)
     return pick_ori
+
+
+def _check_reference(inst):
+    """Aux funcion"""
+    if "eeg" in inst and not _has_eeg_average_ref_proj(inst.info['projs']):
+        raise ValueError('EEG average reference is mandatory for inverse '
+                         'modeling.')
+    if inst.info['custom_ref_applied']:
+        raise ValueError('Custom EEG reference is not allowed for inverse '
+                         'modeling.')
 
 
 def _subject_from_inverse(inverse_operator):
@@ -722,9 +722,9 @@ def _subject_from_inverse(inverse_operator):
 
 
 @verbose
-def apply_inverse(evoked, inverse_operator, lambda2, method="dSPM",
-                  pick_ori=None, pick_normal=None, prepared=False,
-                  verbose=None):
+def apply_inverse(evoked, inverse_operator, lambda2=1. / 9.,
+                  method="dSPM", pick_ori=None,
+                  prepared=False, label=None, verbose=None):
     """Apply inverse operator to evoked data
 
     Parameters
@@ -744,6 +744,9 @@ def apply_inverse(evoked, inverse_operator, lambda2, method="dSPM",
         when working with loose orientations.
     prepared : bool
         If True, do not call `prepare_inverse_operator`.
+    label : Label | None
+        Restricts the source estimates to a given label. If None,
+        source estimates will be computed for the entire source space.
     verbose : bool, str, int, or None
         If not None, override default verbose level (see mne.verbose).
 
@@ -752,8 +755,9 @@ def apply_inverse(evoked, inverse_operator, lambda2, method="dSPM",
     stc : SourceEstimate | VolSourceEstimate
         The source estimates
     """
+    _check_reference(evoked)
     method = _check_method(method)
-    pick_ori = _check_ori(pick_ori, pick_normal)
+    pick_ori = _check_ori(pick_ori)
     #
     #   Set up the inverse according to the parameters
     #
@@ -771,11 +775,11 @@ def apply_inverse(evoked, inverse_operator, lambda2, method="dSPM",
     sel = _pick_channels_inverse_operator(evoked.ch_names, inv)
     logger.info('Picked %d channels from the data' % len(sel))
     logger.info('Computing inverse...')
-    K, noise_norm, _ = _assemble_kernel(inv, None, method, pick_ori)
+    K, noise_norm, vertno = _assemble_kernel(inv, label, method, pick_ori)
     sol = np.dot(K, evoked.data[sel])  # apply imaging kernel
 
-    is_free_ori = (inverse_operator['source_ori'] == FIFF.FIFFV_MNE_FREE_ORI
-                   and pick_ori is None)
+    is_free_ori = (inverse_operator['source_ori'] ==
+                   FIFF.FIFFV_MNE_FREE_ORI and pick_ori is None)
 
     if is_free_ori:
         logger.info('combining the current components...')
@@ -787,7 +791,6 @@ def apply_inverse(evoked, inverse_operator, lambda2, method="dSPM",
 
     tstep = 1.0 / evoked.info['sfreq']
     tmin = float(evoked.times[0])
-    vertno = _get_vertno(inv['src'])
     subject = _subject_from_inverse(inverse_operator)
 
     stc = _make_stc(sol, vertices=vertno, tmin=tmin, tstep=tstep,
@@ -800,9 +803,8 @@ def apply_inverse(evoked, inverse_operator, lambda2, method="dSPM",
 @verbose
 def apply_inverse_raw(raw, inverse_operator, lambda2, method="dSPM",
                       label=None, start=None, stop=None, nave=1,
-                      time_func=None, pick_ori=None,
-                      buffer_size=None, pick_normal=None, prepared=False,
-                      verbose=None):
+                      time_func=None, pick_ori=None, buffer_size=None,
+                      prepared=False, verbose=None):
     """Apply inverse operator to Raw data
 
     Parameters
@@ -850,8 +852,9 @@ def apply_inverse_raw(raw, inverse_operator, lambda2, method="dSPM",
     stc : SourceEstimate | VolSourceEstimate
         The source estimates.
     """
+    _check_reference(raw)
     method = _check_method(method)
-    pick_ori = _check_ori(pick_ori, pick_normal)
+    pick_ori = _check_ori(pick_ori)
 
     _check_ch_names(inverse_operator, raw.info)
 
@@ -876,8 +879,8 @@ def apply_inverse_raw(raw, inverse_operator, lambda2, method="dSPM",
 
     K, noise_norm, vertno = _assemble_kernel(inv, label, method, pick_ori)
 
-    is_free_ori = (inverse_operator['source_ori'] == FIFF.FIFFV_MNE_FREE_ORI
-                   and pick_ori is None)
+    is_free_ori = (inverse_operator['source_ori'] ==
+                   FIFF.FIFFV_MNE_FREE_ORI and pick_ori is None)
 
     if buffer_size is not None and is_free_ori:
         # Process the data in segments to conserve memory
@@ -917,10 +920,10 @@ def apply_inverse_raw(raw, inverse_operator, lambda2, method="dSPM",
 
 def _apply_inverse_epochs_gen(epochs, inverse_operator, lambda2, method='dSPM',
                               label=None, nave=1, pick_ori=None,
-                              pick_normal=None, prepared=False, verbose=None):
+                              prepared=False, verbose=None):
     """ see apply_inverse_epochs """
     method = _check_method(method)
-    pick_ori = _check_ori(pick_ori, pick_normal)
+    pick_ori = _check_ori(pick_ori)
 
     _check_ch_names(inverse_operator, epochs.info)
 
@@ -942,8 +945,8 @@ def _apply_inverse_epochs_gen(epochs, inverse_operator, lambda2, method='dSPM',
     tstep = 1.0 / epochs.info['sfreq']
     tmin = epochs.times[0]
 
-    is_free_ori = (inverse_operator['source_ori'] == FIFF.FIFFV_MNE_FREE_ORI
-                   and pick_ori is None)
+    is_free_ori = (inverse_operator['source_ori'] ==
+                   FIFF.FIFFV_MNE_FREE_ORI and pick_ori is None)
 
     if not is_free_ori and noise_norm is not None:
         # premultiply kernel with noise normalization
@@ -979,7 +982,7 @@ def _apply_inverse_epochs_gen(epochs, inverse_operator, lambda2, method='dSPM',
 @verbose
 def apply_inverse_epochs(epochs, inverse_operator, lambda2, method="dSPM",
                          label=None, nave=1, pick_ori=None,
-                         return_generator=False, pick_normal=None,
+                         return_generator=False,
                          prepared=False, verbose=None):
     """Apply inverse operator to Epochs
 
@@ -1017,10 +1020,10 @@ def apply_inverse_epochs(epochs, inverse_operator, lambda2, method="dSPM",
     stc : list of SourceEstimate or VolSourceEstimate
         The source estimates for all epochs.
     """
+    _check_reference(epochs)
     stcs = _apply_inverse_epochs_gen(epochs, inverse_operator, lambda2,
                                      method=method, label=label, nave=nave,
                                      pick_ori=pick_ori, verbose=verbose,
-                                     pick_normal=pick_normal,
                                      prepared=prepared)
 
     if not return_generator:
@@ -1080,18 +1083,20 @@ def _xyz2lf(Lf_xyz, normals):
 # Assemble the inverse operator
 
 @verbose
-def _prepare_forward(forward, info, noise_cov, pca=False, verbose=None):
+def _prepare_forward(forward, info, noise_cov, pca=False, rank=None,
+                     verbose=None):
     """Util function to prepare forward solution for inverse solvers
     """
-    fwd_ch_names = [c['ch_name'] for c in forward['info']['chs']]
+    # fwd['sol']['row_names'] may be different order from fwd['info']['chs']
+    fwd_sol_ch_names = forward['sol']['row_names']
     ch_names = [c['ch_name'] for c in info['chs']
-                if (c['ch_name'] not in info['bads']
-                    and c['ch_name'] not in noise_cov['bads'])
-                and (c['ch_name'] in fwd_ch_names
-                     and c['ch_name'] in noise_cov.ch_names)]
+                if ((c['ch_name'] not in info['bads'] and
+                     c['ch_name'] not in noise_cov['bads']) and
+                    (c['ch_name'] in fwd_sol_ch_names and
+                     c['ch_name'] in noise_cov.ch_names))]
 
     if not len(info['bads']) == len(noise_cov['bads']) or \
-            not all([b in noise_cov['bads'] for b in info['bads']]):
+            not all(b in noise_cov['bads'] for b in info['bads']):
         logger.info('info["bads"] and noise_cov["bads"] do not match, '
                     'excluding bad channels from both')
 
@@ -1101,7 +1106,7 @@ def _prepare_forward(forward, info, noise_cov, pca=False, verbose=None):
     #
     #   Handle noise cov
     #
-    noise_cov = prepare_noise_cov(noise_cov, info, ch_names)
+    noise_cov = prepare_noise_cov(noise_cov, info, ch_names, rank)
 
     #   Omit the zeroes due to projection
     eig = noise_cov['eig']
@@ -1120,8 +1125,12 @@ def _prepare_forward(forward, info, noise_cov, pca=False, verbose=None):
 
     gain = forward['sol']['data']
 
-    fwd_idx = [fwd_ch_names.index(name) for name in ch_names]
+    # This actually reorders the gain matrix to conform to the info ch order
+    fwd_idx = [fwd_sol_ch_names.index(name) for name in ch_names]
     gain = gain[fwd_idx]
+    # Any function calling this helper will be using the returned fwd_info
+    # dict, so fwd['sol']['row_names'] becomes obsolete and is NOT re-ordered
+
     info_idx = [info['ch_names'].index(name) for name in ch_names]
     fwd_info = pick_info(info, info_idx)
 
@@ -1132,7 +1141,8 @@ def _prepare_forward(forward, info, noise_cov, pca=False, verbose=None):
 
 @verbose
 def make_inverse_operator(info, forward, noise_cov, loose=0.2, depth=0.8,
-                          fixed=False, limit_depth_chs=True, verbose=None):
+                          fixed=False, limit_depth_chs=True, rank=None,
+                          verbose=None):
     """Assemble inverse operator
 
     Parameters
@@ -1157,6 +1167,11 @@ def make_inverse_operator(info, forward, noise_cov, loose=0.2, depth=0.8,
         If True, use only grad channels in depth weighting (equivalent to MNE
         C code). If grad chanels aren't present, only mag channels will be
         used (if no mag, then eeg). If False, use all channels.
+    rank : None | int | dict
+        Specified rank of the noise covariance matrix. If None, the rank is
+        detected automatically. If int, the rank is specified for the MEG
+        channels. A dictionary with entries 'eeg' and/or 'meg' can be used
+        to specify the rank for each modality.
     verbose : bool, str, int, or None
         If not None, override default verbose level (see mne.verbose).
 
@@ -1199,7 +1214,7 @@ def make_inverse_operator(info, forward, noise_cov, loose=0.2, depth=0.8,
     has patch statistics computed, these are used to improve the depth
     weighting. Thus slightly different results are to be expected with
     and without this information.
-    """
+    """  # noqa
     is_fixed_ori = is_fixed_orient(forward)
 
     if fixed and loose is not None:
@@ -1227,11 +1242,13 @@ def make_inverse_operator(info, forward, noise_cov, loose=0.2, depth=0.8,
     if depth is not None:
         if not (0 < depth <= 1):
             raise ValueError('depth should be a scalar between 0 and 1')
-        if is_fixed_ori or not forward['surf_ori']:
+        if is_fixed_ori:
             raise ValueError('You need a free-orientation, surface-oriented '
                              'forward solution to do depth weighting even '
                              'when calculating a fixed-orientation inverse.')
-
+        if not forward['surf_ori']:
+            forward = convert_forward_solution(forward, surf_ori=True)
+        assert forward['surf_ori']
     if loose is not None:
         if not (0 <= loose <= 1):
             raise ValueError('loose value should be smaller than 1 and bigger '
@@ -1250,7 +1267,7 @@ def make_inverse_operator(info, forward, noise_cov, loose=0.2, depth=0.8,
     #
 
     gain_info, gain, noise_cov, whitener, n_nzero = \
-        _prepare_forward(forward, info, noise_cov)
+        _prepare_forward(forward, info, noise_cov, rank=rank)
 
     #
     # 5. Compose the depth-weighting matrix
@@ -1273,8 +1290,8 @@ def make_inverse_operator(info, forward, noise_cov, loose=0.2, depth=0.8,
         if not is_fixed_ori:
             # Convert to the fixed orientation forward solution now
             depth_prior = depth_prior[2::3]
-            forward = deepcopy(forward)
-            _to_fixed_ori(forward)
+            forward = convert_forward_solution(
+                forward, surf_ori=forward['surf_ori'], force_fixed=True)
             is_fixed_ori = is_fixed_orient(forward)
             gain_info, gain, noise_cov, whitener, n_nzero = \
                 _prepare_forward(forward, info, noise_cov, verbose=False)
@@ -1416,3 +1433,124 @@ def compute_rank_inverse(inv):
         ncomp = make_projector(inv['projs'], inv['noise_cov']['names'])[1]
         rank = inv['noise_cov']['dim'] - ncomp
     return rank
+
+
+# #############################################################################
+# SNR Estimation
+
+@verbose
+def estimate_snr(evoked, inv, verbose=None):
+    """Estimate the SNR as a function of time for evoked data
+
+    Parameters
+    ----------
+    evoked : instance of Evoked
+        Evoked instance.
+    inv : instance of InverseOperator
+        The inverse operator.
+    verbose : bool, str, int, or None
+        If not None, override default verbose level (see mne.verbose).
+
+    Returns
+    -------
+    snr : ndarray, shape (n_times,)
+        The SNR estimated from the whitened data.
+    snr_est : ndarray, shape (n_times,)
+        The SNR estimated using the mismatch between the unregularized
+        solution and the regularized solution.
+
+    Notes
+    -----
+    ``snr_est`` is estimated by using different amounts of inverse
+    regularization and checking the mismatch between predicted and
+    measured whitened data.
+
+    In more detail, given our whitened inverse obtained from SVD:
+
+    .. math::
+
+        \\tilde{M} = R^\\frac{1}{2}V\\Gamma U^T
+
+    The values in the diagonal matrix :math:`\\Gamma` are expressed in terms
+    of the chosen regularization :math:`\\lambda\\approx\\frac{1}{\\rm{SNR}^2}`
+    and singular values :math:`\\lambda_k` as:
+
+    .. math::
+
+        \\gamma_k = \\frac{1}{\\lambda_k}\\frac{\\lambda_k^2}{\\lambda_k^2 + \\lambda^2}
+
+    We also know that our predicted data is given by:
+
+    .. math::
+
+        \\hat{x}(t) = G\\hat{j}(t)=C^\\frac{1}{2}U\\Pi w(t)
+
+    And thus our predicted whitened data is just:
+
+    .. math::
+
+        \\hat{w}(t) = U\\Pi w(t)
+
+    Where :math:`\\Pi` is diagonal with entries entries:
+
+    .. math::
+
+        \\lambda_k\\gamma_k = \\frac{\\lambda_k^2}{\\lambda_k^2 + \\lambda^2}
+
+    If we use no regularization, note that :math:`\\Pi` is just the
+    identity matrix. Here we test the squared magnitude of the difference
+    between unregularized solution and regularized solutions, choosing the
+    biggest regularization that achieves a :math:`\\chi^2`-test significance
+    of 0.001.
+
+    .. versionadded:: 0.9.0
+    """  # noqa
+    from scipy.stats import chi2
+    _check_reference(evoked)
+    _check_ch_names(inv, evoked.info)
+    inv = prepare_inverse_operator(inv, evoked.nave, 1. / 9., 'MNE')
+    sel = _pick_channels_inverse_operator(evoked.ch_names, inv)
+    logger.info('Picked %d channels from the data' % len(sel))
+    data_white = np.dot(inv['whitener'], np.dot(inv['proj'], evoked.data[sel]))
+    data_white_ef = np.dot(inv['eigen_fields']['data'], data_white)
+    n_ch, n_times = data_white.shape
+
+    # Adapted from mne_analyze/regularization.c, compute_regularization
+    n_zero = (inv['noise_cov']['eig'] <= 0).sum()
+    logger.info('Effective nchan = %d - %d = %d'
+                % (n_ch, n_zero, n_ch - n_zero))
+    signal = np.sum(data_white ** 2, axis=0)  # sum of squares across channels
+    noise = n_ch - n_zero
+    snr = signal / noise
+
+    # Adapted from noise_regularization
+    lambda2_est = np.empty(n_times)
+    lambda2_est.fill(10.)
+    remaining = np.ones(n_times, bool)
+
+    # deal with low SNRs
+    bad = (snr <= 1)
+    lambda2_est[bad] = 100.
+    remaining[bad] = False
+
+    # parameters
+    lambda_mult = 0.9
+    sing2 = (inv['sing'] * inv['sing'])[:, np.newaxis]
+    val = chi2.isf(1e-3, n_ch - 1)
+    for n_iter in range(1000):
+        # get_mne_weights (ew=error_weights)
+        # (split newaxis creation here for old numpy)
+        f = sing2 / (sing2 + lambda2_est[np.newaxis][:, remaining])
+        f[inv['sing'] == 0] = 0
+        ew = data_white_ef[:, remaining] * (1.0 - f)
+        # check condition
+        err = np.sum(ew * ew, axis=0)
+        remaining[np.where(remaining)[0][err < val]] = False
+        if not remaining.any():
+            break
+        lambda2_est[remaining] *= lambda_mult
+    else:
+        warnings.warn('SNR estimation did not converge')
+    snr_est = 1.0 / np.sqrt(lambda2_est)
+    snr = np.sqrt(snr)
+    return snr, snr_est

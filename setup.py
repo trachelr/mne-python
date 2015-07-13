@@ -7,7 +7,7 @@
 import os
 from os import path as op
 
-import setuptools  # noqa; analysis:ignore; we are using a setuptools namespace
+import setuptools  # noqa; we are using a setuptools namespace
 from numpy.distutils.core import setup
 
 # get the version (don't import mne here, so dependencies are not needed)
@@ -66,11 +66,13 @@ if __name__ == "__main__":
                     'mne.data',
                     'mne.datasets',
                     'mne.datasets.eegbci',
+                    'mne.datasets._fake',
                     'mne.datasets.megsim',
                     'mne.datasets.sample',
                     'mne.datasets.somato',
                     'mne.datasets.spm_face',
                     'mne.datasets.testing',
+                    'mne.datasets.tests',
                     'mne.externals',
                     'mne.io', 'mne.io.tests',
                     'mne.io.array', 'mne.io.array.tests',
@@ -94,12 +96,11 @@ if __name__ == "__main__":
                     'mne.decoding', 'mne.decoding.tests',
                     'mne.commands', 'mne.externals',
                     'mne.externals.tempita',
-                    'mne.layouts',
                     'mne.channels',
                     'mne.channels.tests'],
           package_data={'mne': [op.join('data', '*.sel'),
                                 op.join('data', 'icos.fif.gz'),
-                                op.join('data', 'coil_def.dat'),
+                                op.join('data', 'coil_def*.dat'),
                                 op.join('data', 'helmets', '*.fif.gz'),
                                 op.join('data', 'FreeSurferColorLUT.txt'),
                                 op.join('channels', 'data', 'layouts', '*.lout'),

@@ -63,7 +63,8 @@ def write_proj(fname, projs):
 def _compute_proj(data, info, n_grad, n_mag, n_eeg, desc_prefix, verbose=None):
     mag_ind = pick_types(info, meg='mag', ref_meg=False, exclude='bads')
     grad_ind = pick_types(info, meg='grad', ref_meg=False, exclude='bads')
-    eeg_ind = pick_types(info, meg=False, eeg=True, ref_meg=False, exclude='bads')
+    eeg_ind = pick_types(info, meg=False, eeg=True, ref_meg=False,
+                         exclude='bads')
 
     if (n_grad > 0) and len(grad_ind) == 0:
         logger.info("No gradiometers found. Forcing n_grad to 0")
@@ -189,27 +190,27 @@ def compute_proj_raw(raw, start=0, stop=None, duration=1, n_grad=2, n_mag=2,
     Parameters
     ----------
     raw : instance of Raw
-        A raw object to use the data from
+        A raw object to use the data from.
     start : float
-        Time (in sec) to start computing SSP
+        Time (in sec) to start computing SSP.
     stop : float
-        Time (in sec) to stop computing SSP
-        None will go to the end of the file
+        Time (in sec) to stop computing SSP.
+        None will go to the end of the file.
     duration : float
         Duration (in sec) to chunk data into for SSP
         If duration is None, data will not be chunked.
     n_grad : int
-        Number of vectors for gradiometers
+        Number of vectors for gradiometers.
     n_mag : int
-        Number of vectors for magnetometers
+        Number of vectors for magnetometers.
     n_eeg : int
-        Number of vectors for EEG channels
-    reject : dict
-        Epoch rejection configuration (see Epochs)
-    flat : dict
-        Epoch flat configuration (see Epochs)
+        Number of vectors for EEG channels.
+    reject : dict | None
+        Epoch rejection configuration (see Epochs).
+    flat : dict | None
+        Epoch flat configuration (see Epochs).
     n_jobs : int
-        Number of jobs to use to compute covariance
+        Number of jobs to use to compute covariance.
     verbose : bool, str, int, or None
         If not None, override default verbose level (see mne.verbose).
 
@@ -273,17 +274,17 @@ def sensitivity_map(fwd, projs=None, ch_type='grad', mode='fixed', exclude=[],
     verbose : bool, str, int, or None
         If not None, override default verbose level (see mne.verbose).
 
-    Return
-    ------
+    Returns
+    -------
     stc : SourceEstimate
         The sensitivity map as a SourceEstimate instance for
         visualization.
     """
     # check strings
-    if not ch_type in ['eeg', 'grad', 'mag']:
+    if ch_type not in ['eeg', 'grad', 'mag']:
         raise ValueError("ch_type should be 'eeg', 'mag' or 'grad (got %s)"
                          % ch_type)
-    if not mode in ['free', 'fixed', 'ratio', 'radiality', 'angle',
+    if mode not in ['free', 'fixed', 'ratio', 'radiality', 'angle',
                     'remaining', 'dampening']:
         raise ValueError('Unknown mode type (got %s)' % mode)
 

@@ -49,7 +49,8 @@ def test_kit2fiff_model():
     # Compare exported raw with the original binary conversion
     raw_bin = Raw(fif_path)
     trans_bin = raw.info['dev_head_t']['trans']
-    assert_equal(raw_bin.info.keys(), raw.info.keys())
+    want_keys = list(raw_bin.info.keys())
+    assert_equal(sorted(want_keys), sorted(list(raw.info.keys())))
     trans_transform = raw_bin.info['dev_head_t']['trans']
     assert_allclose(trans_transform, trans_bin, 0.1)
 
@@ -87,6 +88,11 @@ def test_kit2fiff_model():
     raw = model.get_raw()
     events = mne.find_events(raw, stim_channel='STI 014')
     assert_array_equal(events, events_bin)
+
+    # test reset
+    model.clear_all()
+    assert_equal(model.use_mrk, [0, 1, 2, 3, 4])
+    assert_equal(model.sqd_file, "")
 
     os.environ['_MNE_GUI_TESTING_MODE'] = 'true'
     try:

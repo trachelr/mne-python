@@ -11,11 +11,11 @@ import warnings
 from mne.datasets import testing
 from mne import (read_source_spaces, vertex_to_mni, write_source_spaces,
                  setup_source_space, setup_volume_source_space,
-                 add_source_space_distances)
+                 add_source_space_distances, read_bem_surfaces)
 from mne.utils import (_TempDir, requires_fs_or_nibabel, requires_nibabel,
                        requires_freesurfer, run_subprocess,
                        requires_mne, requires_scipy_version,
-                       run_tests_if_main)
+                       run_tests_if_main, slow_test)
 from mne.surface import _accumulate_normals, _triangle_neighbors
 from mne.source_space import _get_mgz_header
 from mne.externals.six.moves import zip
@@ -120,6 +120,7 @@ def test_add_source_space_distances_limited():
         assert_allclose(np.zeros_like(d.data), d.data, rtol=0, atol=1e-6)
 
 
+@slow_test
 @testing.requires_testing_data
 @requires_scipy_version('0.11')
 def test_add_source_space_distances():
@@ -203,6 +204,7 @@ def test_discrete_source_space():
             os.remove(temp_name)
 
 
+@slow_test
 @testing.requires_testing_data
 def test_volume_source_space():
     """Test setting up volume source spaces
@@ -210,14 +212,21 @@ def test_volume_source_space():
     tempdir = _TempDir()
     src = read_source_spaces(fname_vol)
     temp_name = op.join(tempdir, 'temp-src.fif')
-    # The one in the sample dataset (uses bem as bounds)
-    src_new = setup_volume_source_space('sample', temp_name, pos=7.0,
-                                        bem=fname_bem, mri=fname_mri,
-                                        subjects_dir=subjects_dir)
-    _compare_source_spaces(src, src_new, mode='approx')
-    del src_new
-    src_new = read_source_spaces(temp_name)
-    _compare_source_spaces(src, src_new, mode='approx')
+    surf = read_bem_surfaces(fname_bem, s_id=FIFF.FIFFV_BEM_SURF_ID_BRAIN)
+    surf['rr'] *= 1e3  # convert to mm
+    # The one in the testing dataset (uses bem as bounds)
+    for bem, surf in zip((fname_bem, None), (None, surf)):
+        src_new = setup_volume_source_space('sample', temp_name, pos=7.0,
+                                            bem=bem, surface=surf,
+                                            mri=fname_mri,
+                                            subjects_dir=subjects_dir)
+        _compare_source_spaces(src, src_new, mode='approx')
+        del src_new
+        src_new = read_source_spaces(temp_name)
+        _compare_source_spaces(src, src_new, mode='approx')
+    assert_raises(IOError, setup_volume_source_space, 'sample', temp_name,
+                  pos=7.0, bem=None, surface='foo',  # bad surf
+                  mri=fname_mri, subjects_dir=subjects_dir)
 
 
 @testing.requires_testing_data
@@ -241,6 +250,9 @@ def test_other_volume_source_spaces():
     _compare_source_spaces(src, src_new, mode='approx')
     del src
     del src_new
+    assert_raises(ValueError, setup_volume_source_space, 'sample', temp_name,
+                  pos=7.0, sphere=[1., 1.], mri=fname_mri,  # bad sphere
+                  subjects_dir=subjects_dir)
 
     # now without MRI argument, it should give an error when we try
     # to read it
@@ -293,6 +305,7 @@ def test_accumulate_normals():
     assert_allclose(nn, this['nn'], rtol=1e-7, atol=1e-7)
 
 
+@slow_test
 @testing.requires_testing_data
 def test_setup_source_space():
     """Test setting up ico, oct, and all source spaces
@@ -353,7 +366,7 @@ def test_setup_source_space():
 def test_read_source_spaces():
     """Test reading of source space meshes
     """
-    src = read_source_spaces(fname, add_geom=True)
+    src = read_source_spaces(fname, patch_stats=True)
 
     # 3D source space
     lh_points = src[0]['rr']
@@ -372,14 +385,16 @@ def test_read_source_spaces():
     assert_true(rh_use_faces.max() <= rh_points.shape[0] - 1)
 
 
+@slow_test
 @testing.requires_testing_data
 def test_write_source_space():
-    """Test writing and reading of source spaces
+    """Test reading and writing of source spaces
     """
     tempdir = _TempDir()
-    src0 = read_source_spaces(fname, add_geom=False)
+    src0 = read_source_spaces(fname, patch_stats=False)
     write_source_spaces(op.join(tempdir, 'tmp-src.fif'), src0)
-    src1 = read_source_spaces(op.join(tempdir, 'tmp-src.fif'), add_geom=False)
+    src1 = read_source_spaces(op.join(tempdir, 'tmp-src.fif'),
+                              patch_stats=False)
     _compare_source_spaces(src0, src1)
 
     # test warnings on bad filenames
@@ -484,7 +499,7 @@ def test_combine_source_spaces():
                      for ii in range(2)]
 
     # get a surface source space (no need to test creation here)
-    srf = read_source_spaces(fname, add_geom=False)
+    srf = read_source_spaces(fname, patch_stats=False)
 
     # setup 2 volume source spaces
     vol = setup_volume_source_space('sample', subjects_dir=subjects_dir,
