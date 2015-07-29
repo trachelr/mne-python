@@ -180,6 +180,7 @@ def test_decim():
         epochs = Epochs(raw, events, event_id, tmin, tmax, decim=decim,
                         preload=preload)
         assert_array_equal(epochs.get_data(), expected_data)
+        assert_array_equal(epochs.get_data(), expected_data)
         assert_equal(epochs.info['sfreq'], sfreq_new)
         assert_array_equal(epochs.times, expected_times)
 
@@ -187,10 +188,12 @@ def test_decim():
         epochs = Epochs(raw, events, event_id, tmin, tmax, decim=dec_1,
                         preload=preload).decimate(dec_2)
         assert_array_equal(epochs.get_data(), expected_data)
+        assert_array_equal(epochs.get_data(), expected_data)
         assert_equal(epochs.info['sfreq'], sfreq_new)
         assert_array_equal(epochs.times, expected_times)
         epochs = Epochs(raw, events, event_id, tmin, tmax, decim=dec_2,
                         preload=preload).decimate(dec_1)
+        assert_array_equal(epochs.get_data(), expected_data)
         assert_array_equal(epochs.get_data(), expected_data)
         assert_equal(epochs.info['sfreq'], sfreq_new)
         assert_array_equal(epochs.times, expected_times)
@@ -201,6 +204,7 @@ def test_decim():
         epochs.preload_data()
         epochs = epochs.decimate(dec_2)
         assert_array_equal(epochs.get_data(), expected_data)
+        assert_array_equal(epochs.get_data(), expected_data)
         assert_equal(epochs.info['sfreq'], sfreq_new)
         assert_array_equal(epochs.times, expected_times)
         epochs = Epochs(raw, events, event_id, tmin, tmax, decim=dec_2,
@@ -208,12 +212,14 @@ def test_decim():
         epochs.preload_data()
         epochs = epochs.decimate(dec_1)
         assert_array_equal(epochs.get_data(), expected_data)
+        assert_array_equal(epochs.get_data(), expected_data)
         assert_equal(epochs.info['sfreq'], sfreq_new)
         assert_array_equal(epochs.times, expected_times)
 
         # decimate afterward
         epochs = Epochs(raw, events, event_id, tmin, tmax,
                         preload=preload).decimate(decim)
+        assert_array_equal(epochs.get_data(), expected_data)
         assert_array_equal(epochs.get_data(), expected_data)
         assert_equal(epochs.info['sfreq'], sfreq_new)
         assert_array_equal(epochs.times, expected_times)
@@ -223,6 +229,7 @@ def test_decim():
                         preload=preload)
         epochs.preload_data()
         epochs.decimate(decim)
+        assert_array_equal(epochs.get_data(), expected_data)
         assert_array_equal(epochs.get_data(), expected_data)
         assert_equal(epochs.info['sfreq'], sfreq_new)
         assert_array_equal(epochs.times, expected_times)
@@ -483,6 +490,14 @@ def test_read_write_epochs():
     assert_array_equal(epochs.events, epochs_read.events)
     assert_equal(set(epochs.event_id.keys()),
                  set(text_type(x) for x in epochs_read.event_id.keys()))
+
+    # test saving split epoch files
+    epochs.save(temp_fname, split_size='7MB')
+    epochs_read = read_epochs(temp_fname)
+    assert_allclose(epochs.get_data(), epochs_read.get_data())
+    assert_array_equal(epochs.events, epochs_read.events)
+    assert_array_equal(epochs.selection, epochs_read.selection)
+    assert_equal(epochs.drop_log, epochs_read.drop_log)
 
 
 def test_epochs_proj():
@@ -827,13 +842,17 @@ def test_resample():
                     baseline=(None, 0), preload=False,
                     reject=reject, flat=flat)
     assert_raises(RuntimeError, epochs.resample, 100)
-    epochs = Epochs(raw, events[:10], event_id, tmin, tmax, picks=picks,
-                    baseline=(None, 0), preload=True,
-                    reject=reject, flat=flat)
+
+    epochs_o = Epochs(raw, events[:10], event_id, tmin, tmax, picks=picks,
+                      baseline=(None, 0), preload=True,
+                      reject=reject, flat=flat)
+    epochs = epochs_o.copy()
+
     data_normal = cp.deepcopy(epochs.get_data())
     times_normal = cp.deepcopy(epochs.times)
     sfreq_normal = epochs.info['sfreq']
     # upsample by 2
+    epochs = epochs_o.copy()
     epochs.resample(sfreq_normal * 2, npad=0)
     data_up = cp.deepcopy(epochs.get_data())
     times_up = cp.deepcopy(epochs.times)
@@ -852,11 +871,16 @@ def test_resample():
     assert_array_almost_equal(data_new, data_normal, 5)
 
     # use parallel
-    epochs = Epochs(raw, events[:10], event_id, tmin, tmax, picks=picks,
-                    baseline=(None, 0), preload=True,
-                    reject=reject, flat=flat)
+    epochs = epochs_o.copy()
     epochs.resample(sfreq_normal * 2, n_jobs=2, npad=0)
     assert_true(np.allclose(data_up, epochs._data, rtol=1e-8, atol=1e-16))
+
+    # test copy flag
+    epochs = epochs_o.copy()
+    epochs_resampled = epochs.resample(sfreq_normal * 2, npad=0, copy=True)
+    assert_true(epochs_resampled is not epochs)
+    epochs_resampled = epochs.resample(sfreq_normal * 2, npad=0, copy=False)
+    assert_true(epochs_resampled is epochs)
 
 
 def test_detrend():
@@ -1583,6 +1607,46 @@ def test_concatenate_epochs():
         concatenate_epochs, [epochs, epochs2])
 
     assert_equal(epochs_conc._raw, None)
+
+    # check if baseline is same for all epochs
+    epochs2.baseline = (-0.1, None)
+    assert_raises(ValueError, concatenate_epochs, [epochs, epochs2])
+
+
+def test_add_channels():
+    """Test epoch splitting / re-appending channel types
+    """
+    raw, events, picks = _get_data()
+    epoch_nopre = Epochs(
+        raw=raw, events=events, event_id=event_id, tmin=tmin, tmax=tmax,
+        picks=picks)
+    epoch = Epochs(
+        raw=raw, events=events, event_id=event_id, tmin=tmin, tmax=tmax,
+        picks=picks, preload=True)
+    epoch_eeg = epoch.pick_types(meg=False, eeg=True, copy=True)
+    epoch_meg = epoch.pick_types(meg=True, copy=True)
+    epoch_stim = epoch.pick_types(meg=False, stim=True, copy=True)
+    epoch_eeg_meg = epoch.pick_types(meg=True, eeg=True, copy=True)
+    epoch_new = epoch_meg.add_channels([epoch_eeg, epoch_stim], copy=True)
+    assert_true(all(ch in epoch_new.ch_names
+                    for ch in epoch_stim.ch_names + epoch_meg.ch_names))
+    epoch_new = epoch_meg.add_channels([epoch_eeg], copy=True)
+
+    assert_true(ch in epoch_new.ch_names for ch in epoch.ch_names)
+    assert_array_equal(epoch_new._data, epoch_eeg_meg._data)
+    assert_true(all(ch not in epoch_new.ch_names
+                    for ch in epoch_stim.ch_names))
+
+    # Now test errors
+    epoch_badsf = epoch_eeg.copy()
+    epoch_badsf.info['sfreq'] = 3.1415927
+    epoch_eeg = epoch_eeg.crop(-.1, .1)
+
+    assert_raises(AssertionError, epoch_meg.add_channels, [epoch_nopre])
+    assert_raises(RuntimeError, epoch_meg.add_channels, [epoch_badsf])
+    assert_raises(AssertionError, epoch_meg.add_channels, [epoch_eeg])
+    assert_raises(ValueError, epoch_meg.add_channels, [epoch_meg])
+    assert_raises(AssertionError, epoch_meg.add_channels, epoch_badsf)
 
 
 run_tests_if_main()

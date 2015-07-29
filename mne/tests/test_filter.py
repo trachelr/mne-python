@@ -7,9 +7,9 @@ import warnings
 from scipy.signal import resample as sp_resample
 
 from mne.filter import (band_pass_filter, high_pass_filter, low_pass_filter,
-                        band_stop_filter, resample, construct_iir_filter,
-                        notch_filter, detrend, _overlap_add_filter,
-                        _smart_pad)
+                        band_stop_filter, resample, _resample_stim_channels,
+                        construct_iir_filter, notch_filter, detrend,
+                        _overlap_add_filter, _smart_pad)
 
 from mne import set_log_file
 from mne.utils import _TempDir, sum_squared, run_tests_if_main, slow_test
@@ -54,12 +54,12 @@ def test_1d_filter():
                     for n_fft in (None, 32, 128, 129, 1023, 1024, 1025, 2048):
                         # need to use .copy() b/c signal gets modified inplace
                         x_copy = x[np.newaxis, :].copy()
-                        if (n_fft is not None and n_fft < 2 * n_filter - 1
-                                and zero_phase):
+                        if (n_fft is not None and n_fft < 2 * n_filter - 1 and
+                                zero_phase):
                             assert_raises(ValueError, _overlap_add_filter,
                                           x_copy, h, n_fft, zero_phase)
-                        elif (n_fft is not None and n_fft < n_filter
-                                and not zero_phase):
+                        elif (n_fft is not None and n_fft < n_filter and not
+                                zero_phase):
                             assert_raises(ValueError, _overlap_add_filter,
                                           x_copy, h, n_fft, zero_phase)
                         else:
@@ -154,6 +154,27 @@ def test_resample():
     x_3 = x.swapaxes(0, 2)
     x_3_rs = resample(x_3, 1, 2, 10, 0)
     assert_array_equal(x_3_rs.swapaxes(0, 2), x_rs)
+
+
+def test_resample_stim_channel():
+    """Test resampling of stim channels"""
+
+    # Downsampling
+    assert_array_equal(
+        _resample_stim_channels([1, 0, 0, 0, 2, 0, 0, 0], 1, 2),
+        [[1, 0, 2, 0]])
+    assert_array_equal(
+        _resample_stim_channels([1, 0, 0, 0, 2, 0, 0, 0], 1, 1.5),
+        [[1, 0, 0, 2, 0]])
+    assert_array_equal(
+        _resample_stim_channels([1, 0, 0, 1, 2, 0, 0, 1], 1, 2),
+        [[1, 1, 2, 1]])
+
+    # Upsampling
+    assert_array_equal(
+        _resample_stim_channels([1, 2, 3], 2, 1), [[1, 1, 2, 2, 3, 3]])
+    assert_array_equal(
+        _resample_stim_channels([1, 2, 3], 2.5, 1), [[1, 1, 1, 2, 2, 3, 3]])
 
 
 @slow_test

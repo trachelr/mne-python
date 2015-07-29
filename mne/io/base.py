@@ -20,17 +20,18 @@ from .constants import FIFF
 from .pick import pick_types, channel_type, pick_channels, pick_info
 from .meas_info import write_meas_info
 from .proj import setup_proj, activate_proj, _proj_equal, ProjMixin
-from ..channels.channels import (ContainsMixin, PickDropChannelsMixin,
+from ..channels.channels import (ContainsMixin, UpdateChannelsMixin,
                                  SetChannelsMixin, InterpolationMixin)
 from ..channels.montage import read_montage, _set_montage, Montage
 from .compensator import set_current_comp
 from .write import (start_file, end_file, start_block, end_block,
                     write_dau_pack16, write_float, write_double,
                     write_complex64, write_complex128, write_int,
-                    write_id, write_string)
+                    write_id, write_string, _get_split_size)
 
 from ..filter import (low_pass_filter, high_pass_filter, band_pass_filter,
-                      notch_filter, band_stop_filter, resample)
+                      notch_filter, band_stop_filter, resample,
+                      _resample_stim_channels)
 from ..fixes import in1d
 from ..parallel import parallel_func
 from ..utils import (_check_fname, _check_pandas_installed,
@@ -40,7 +41,7 @@ from ..utils import (_check_fname, _check_pandas_installed,
 from ..viz import plot_raw, plot_raw_psd
 from ..defaults import _handle_default
 from ..externals.six import string_types
-from ..event import concatenate_events
+from ..event import find_events, concatenate_events
 
 
 class ToDataFrameMixin(object):
@@ -99,8 +100,6 @@ class ToDataFrameMixin(object):
         """
         from ..epochs import _BaseEpochs
         from ..evoked import Evoked
-        from .fiff import RawFIF
-        from .array import RawArray
         from ..source_estimate import _BaseSourceEstimate
 
         pd = _check_pandas_installed()
@@ -126,9 +125,9 @@ class ToDataFrameMixin(object):
             else:
                 # volume source estimates
                 col_names = ['VOL {0}'.format(vert) for vert in self.vertices]
-        else:
+        elif isinstance(self, (_BaseEpochs, _BaseRaw, Evoked)):
+            picks = self._get_check_picks(picks, self.ch_names)
             if isinstance(self, _BaseEpochs):
-                picks = self._get_check_picks(picks, self.ch_names)
                 default_index = ['condition', 'epoch', 'time']
                 data = self.get_data()[:, picks, :]
                 times = self.times
@@ -144,10 +143,9 @@ class ToDataFrameMixin(object):
                               np.repeat(np.arange(n_epochs), n_times)))
                 col_names = [self.ch_names[k] for k in picks]
 
-            elif isinstance(self, (RawFIF, RawArray, Evoked)):
-                picks = self._get_check_picks(picks, self.ch_names)
+            elif isinstance(self, (_BaseRaw, Evoked)):
                 default_index = ['time']
-                if isinstance(self, (RawFIF, RawArray)):
+                if isinstance(self, _BaseRaw):
                     data, times = self[picks, start:stop]
                 elif isinstance(self, Evoked):
                     data = self.data[picks, :]
@@ -171,6 +169,10 @@ class ToDataFrameMixin(object):
                 idx = [picks[i] for i in range(len(picks)) if types[i] == t]
                 if len(idx) > 0:
                     data[:, idx] *= scaling
+        else:
+            # In case some other object gets this mixin w/o an explicit check
+            raise NameError('Object must be one of Raw, Epochs, Evoked,  or ' +
+                            'SourceEstimate. This is {0}'.format(type(self)))
 
         # Make sure that the time index is scaled correctly
         times = np.round(times * scale_time)
@@ -209,7 +211,7 @@ def _check_fun(fun, d, *args, **kwargs):
     return d
 
 
-class _BaseRaw(ProjMixin, ContainsMixin, PickDropChannelsMixin,
+class _BaseRaw(ProjMixin, ContainsMixin, UpdateChannelsMixin,
                SetChannelsMixin, InterpolationMixin, ToDataFrameMixin):
     """Base class for Raw data
 
@@ -708,10 +710,10 @@ class _BaseRaw(ProjMixin, ContainsMixin, PickDropChannelsMixin,
         l_freq and h_freq are the frequencies below which and above which,
         respectively, to filter out of the data. Thus the uses are:
 
-            l_freq < h_freq: band-pass filter
-            l_freq > h_freq: band-stop filter
-            l_freq is not None, h_freq is None: high-pass filter
-            l_freq is None, h_freq is not None: low-pass filter
+            * ``l_freq < h_freq``: band-pass filter
+            * ``l_freq > h_freq``: band-stop filter
+            * ``l_freq is not None and h_freq is None``: high-pass filter
+            * ``l_freq is None and h_freq is not None``: low-pass filter
 
         If n_jobs > 1, more memory is required as "len(picks) * n_times"
         additional time points need to be temporarily stored in memory.
@@ -758,6 +760,10 @@ class _BaseRaw(ProjMixin, ContainsMixin, PickDropChannelsMixin,
         verbose : bool, str, int, or None
             If not None, override default verbose level (see mne.verbose).
             Defaults to self.verbose.
+
+        See Also
+        --------
+        mne.Epochs.savgol_filter
         """
         if verbose is None:
             verbose = self.verbose
@@ -926,11 +932,11 @@ class _BaseRaw(ProjMixin, ContainsMixin, PickDropChannelsMixin,
                                   picks=picks, n_jobs=n_jobs, copy=False)
 
     @verbose
-    def resample(self, sfreq, npad=100, window='boxcar',
-                 stim_picks=None, n_jobs=1, verbose=None):
+    def resample(self, sfreq, npad=100, window='boxcar', stim_picks=None,
+                 n_jobs=1, events=None, copy=False, verbose=None):
         """Resample data channels.
 
-        Resamples all channels. The data of the Raw object is modified inplace.
+        Resamples all channels.
 
         The Raw object has to be constructed using preload=True (or string).
 
@@ -940,10 +946,15 @@ class _BaseRaw(ProjMixin, ContainsMixin, PickDropChannelsMixin,
                      raw data effectively jitters trigger timings. It is
                      generally recommended not to epoch downsampled data,
                      but instead epoch and then downsample, as epoching
-                     downsampled data jitters triggers. See here for an
-                     example:
+                     downsampled data jitters triggers.
+                     See here for an example:
 
                          https://gist.github.com/Eric89GXL/01642cb3789992fbca59
+
+                     If resampling the continuous data is desired, it is
+                     recommended to construct events using the original data.
+                     The event onsets can be jointly resampled with the raw
+                     data using the 'events' parameter.
 
         Parameters
         ----------
@@ -962,9 +973,20 @@ class _BaseRaw(ProjMixin, ContainsMixin, PickDropChannelsMixin,
         n_jobs : int | str
             Number of jobs to run in parallel. Can be 'cuda' if scikits.cuda
             is installed properly and CUDA is initialized.
+        events : 2D array, shape (n_events, 3) | None
+            An optional event matrix. When specified, the onsets of the events
+            are resampled jointly with the data.
+        copy : bool
+            Whether to operate on a copy of the data (True) or modify data
+            in-place (False). Defaults to False.
         verbose : bool, str, int, or None
             If not None, override default verbose level (see mne.verbose).
             Defaults to self.verbose.
+
+        Returns
+        -------
+        raw : instance of Raw
+            The resampled version of the raw object.
 
         Notes
         -----
@@ -973,45 +995,83 @@ class _BaseRaw(ProjMixin, ContainsMixin, PickDropChannelsMixin,
         """
         if not self.preload:
             raise RuntimeError('Can only resample preloaded data')
-        sfreq = float(sfreq)
-        o_sfreq = float(self.info['sfreq'])
 
-        offsets = np.concatenate(([0], np.cumsum(self._raw_lengths)))
+        inst = self.copy() if copy else self
+
+        # When no event object is supplied, some basic detection of dropped
+        # events is performed to generate a warning. Finding events can fail
+        # for a variety of reasons, e.g. if no stim channel is present or it is
+        # corrupted. This should not stop the resampling from working. The
+        # warning should simply not be generated in this case.
+        if events is None:
+            try:
+                original_events = find_events(inst)
+            except:
+                pass
+
+        sfreq = float(sfreq)
+        o_sfreq = float(inst.info['sfreq'])
+
+        offsets = np.concatenate(([0], np.cumsum(inst._raw_lengths)))
         new_data = list()
+
+        ratio = sfreq / o_sfreq
+
         # set up stim channel processing
         if stim_picks is None:
-            stim_picks = pick_types(self.info, meg=False, ref_meg=False,
+            stim_picks = pick_types(inst.info, meg=False, ref_meg=False,
                                     stim=True, exclude=[])
         stim_picks = np.asanyarray(stim_picks)
-        ratio = sfreq / o_sfreq
-        for ri in range(len(self._raw_lengths)):
-            data_chunk = self._data[:, offsets[ri]:offsets[ri + 1]]
+
+        for ri in range(len(inst._raw_lengths)):
+            data_chunk = inst._data[:, offsets[ri]:offsets[ri + 1]]
             new_data.append(resample(data_chunk, sfreq, o_sfreq, npad,
                                      n_jobs=n_jobs))
             new_ntimes = new_data[ri].shape[1]
 
-            # Now deal with the stim channels. In empirical testing, it was
-            # faster to resample all channels (above) and then replace the
-            # stim channels than it was to only resample the proper subset
-            # of channels and then use np.insert() to restore the stims
+            # In empirical testing, it was faster to resample all channels
+            # (above) and then replace the stim channels than it was to only
+            # resample the proper subset of channels and then use np.insert()
+            # to restore the stims.
+            if len(stim_picks) > 0:
+                stim_resampled = _resample_stim_channels(
+                    data_chunk[stim_picks], new_data[ri].shape[1],
+                    data_chunk.shape[1])
+                new_data[ri][stim_picks] = stim_resampled
 
-            # figure out which points in old data to subsample
-            # protect against out-of-bounds, which can happen (having
-            # one sample more than expected) due to padding
-            stim_inds = np.minimum(np.floor(np.arange(new_ntimes) /
-                                            ratio).astype(int),
-                                   data_chunk.shape[1] - 1)
-            for sp in stim_picks:
-                new_data[ri][sp] = data_chunk[[sp]][:, stim_inds]
+            inst._first_samps[ri] = int(inst._first_samps[ri] * ratio)
+            inst._last_samps[ri] = inst._first_samps[ri] + new_ntimes - 1
+            inst._raw_lengths[ri] = new_ntimes
 
-            self._first_samps[ri] = int(self._first_samps[ri] * ratio)
-            self._last_samps[ri] = self._first_samps[ri] + new_ntimes - 1
-            self._raw_lengths[ri] = new_ntimes
+        inst._data = np.concatenate(new_data, axis=1)
+        inst.info['sfreq'] = sfreq
+        inst._update_times()
 
-        # adjust affected variables
-        self._data = np.concatenate(new_data, axis=1)
-        self.info['sfreq'] = sfreq
-        self._update_times()
+        # See the comment above why we ignore all errors here.
+        if events is None:
+            try:
+                # Did we loose events?
+                resampled_events = find_events(inst)
+                if len(resampled_events) != len(original_events):
+                    warnings.warn(
+                        'Resampling of the stim channels caused event '
+                        'information to become unreliable. Consider finding '
+                        'events on the original data and passing the event '
+                        'matrix as a parameter.'
+                    )
+            except:
+                pass
+
+            return inst
+        else:
+            if copy:
+                events = events.copy()
+
+            events[:, 0] = np.minimum(
+                np.round(events[:, 0] * ratio).astype(int),
+                inst._data.shape[1]
+            )
+            return inst, events
 
     def crop(self, tmin=0.0, tmax=None, copy=True):
         """Crop raw data file.
@@ -1138,15 +1198,7 @@ class _BaseRaw(ProjMixin, ContainsMixin, PickDropChannelsMixin,
                                    'raw.fif.gz', 'raw_sss.fif.gz',
                                    'raw_tsss.fif.gz'))
 
-        if isinstance(split_size, string_types):
-            exp = dict(MB=20, GB=30).get(split_size[-2:], None)
-            if exp is None:
-                raise ValueError('split_size has to end with either'
-                                 '"MB" or "GB"')
-            split_size = int(float(split_size[:-2]) * 2 ** exp)
-
-        if split_size > 2147483648:
-            raise ValueError('split_size cannot be larger than 2GB')
+        split_size = _get_split_size(split_size)
 
         fname = op.realpath(fname)
         if not self.preload and fname in self._filenames:
@@ -1188,7 +1240,6 @@ class _BaseRaw(ProjMixin, ContainsMixin, PickDropChannelsMixin,
         # set the correct compensation grade and make inverse compensator
         inv_comp = None
         if self.comp is not None:
-            print(self.comp)
             inv_comp = linalg.inv(self.comp)
             set_current_comp(info, self._orig_comp_grade)
 
@@ -1368,7 +1419,7 @@ class _BaseRaw(ProjMixin, ContainsMixin, PickDropChannelsMixin,
                             area_alpha=area_alpha, n_overlap=n_overlap,
                             dB=dB, show=show, n_jobs=n_jobs)
 
-    def time_as_index(self, times, use_first_samp=False):
+    def time_as_index(self, times, use_first_samp=False, use_rounding=False):
         """Convert time to indices
 
         Parameters
@@ -1378,6 +1429,9 @@ class _BaseRaw(ProjMixin, ContainsMixin, PickDropChannelsMixin,
         use_first_samp : boolean
             If True, time is treated as relative to the session onset, else
             as relative to the recording onset.
+        use_rounding : boolean
+            If True, use rounding (instead of truncation) when converting
+            times to indicies. This can help avoid non-unique indices.
 
         Returns
         -------
@@ -1385,7 +1439,7 @@ class _BaseRaw(ProjMixin, ContainsMixin, PickDropChannelsMixin,
             Indices corresponding to the times supplied.
         """
         return _time_as_index(times, self.info['sfreq'], self.first_samp,
-                              use_first_samp)
+                              use_first_samp, use_rounding=use_rounding)
 
     def index_as_time(self, index, use_first_samp=False):
         """Convert indices to time
@@ -1676,7 +1730,7 @@ class _BaseRaw(ProjMixin, ContainsMixin, PickDropChannelsMixin,
         events = np.asarray(events)
         if events.ndim != 2 or events.shape[1] != 3:
             raise ValueError('events must be shape (n_events, 3)')
-        stim_channel = _get_stim_channel(stim_channel)
+        stim_channel = _get_stim_channel(stim_channel, self.info)
         pick = pick_channels(self.ch_names, stim_channel)
         if len(pick) == 0:
             raise ValueError('Channel %s not found' % stim_channel)
@@ -1702,25 +1756,43 @@ def _allocate_data(data, data_buffer, data_shape, dtype):
     return data
 
 
-def _time_as_index(times, sfreq, first_samp=0, use_first_samp=False):
+def _time_as_index(times, sfreq, first_samp=0, use_first_samp=False,
+                   use_rounding=False):
     """Convert time to indices
 
     Parameters
     ----------
     times : list-like | float | int
         List of numbers or a number representing points in time.
+    sfreq : float | int
+        Sample frequency.
+    first_samp : int
+       Index to use as first time point.
     use_first_samp : boolean
         If True, time is treated as relative to the session onset, else
         as relative to the recording onset.
+    use_rounding : boolean
+        If True, use rounding (instead of truncation) when converting times to
+        indicies. This can help avoid non-unique indices.
 
     Returns
     -------
     index : ndarray
         Indices corresponding to the times supplied.
+
+    Notes
+    -----
+    np.round will return the nearest even number for values exactly between
+        two integers.
     """
     index = np.atleast_1d(times) * sfreq
     index -= (first_samp if use_first_samp else 0)
-    return index.astype(int)
+
+    # Round or truncate time indices
+    if use_rounding:
+        return np.round(index).astype(int)
+    else:
+        return index.astype(int)
 
 
 def _index_as_time(index, sfreq, first_samp=0, use_first_samp=False):

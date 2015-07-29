@@ -17,8 +17,9 @@ from .io.write import (start_block, end_block, write_int,
                        write_float_sparse_rcs, write_string,
                        write_float_matrix, write_int_matrix,
                        write_coord_trans, start_file, end_file, write_id)
+from .bem import read_bem_surfaces
 from .surface import (read_surface, _create_surf_spacing, _get_ico_surface,
-                      _tessellate_sphere_surf, read_bem_surfaces,
+                      _tessellate_sphere_surf,
                       _read_surface_geom, _normalize_vectors,
                       _complete_surface_info, _compute_nearest,
                       fast_cross_3d, _fast_cross_nd_sum)
@@ -510,6 +511,10 @@ def read_source_spaces(fname, patch_stats=False, verbose=None):
     -------
     src : SourceSpaces
         The source spaces.
+
+    See Also
+    --------
+    write_source_spaces, setup_source_space, setup_volume_source_space
     """
     # be more permissive on read than write (fwd/inv can contain src)
     check_fname(fname, 'source space', ('-src.fif', '-src.fif.gz',
@@ -896,6 +901,10 @@ def write_source_spaces(fname, src, verbose=None):
         The source spaces (as returned by read_source_spaces).
     verbose : bool, str, int, or None
         If not None, override default verbose level (see mne.verbose).
+
+    See Also
+    --------
+    read_source_spaces
     """
     check_fname(fname, 'source space', ('-src.fif', '-src.fif.gz'))
 

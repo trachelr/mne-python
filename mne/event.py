@@ -215,6 +215,10 @@ def read_events(filename, include=None, exclude=None, mask=0):
     events: array, shape (n_events, 3)
         The list of events
 
+    See Also
+    --------
+    find_events, write_events
+
     Notes
     -----
     This function will discard the offset line (i.e., first line with zero
@@ -276,6 +280,10 @@ def write_events(filename, event_list):
 
     event_list : array, shape (n_events, 3)
         The list of events
+
+    See Also
+    --------
+    read_events
     """
     check_fname(filename, 'events', ('.eve', '-eve.fif', '-eve.fif.gz',
                                      '-eve.lst', '-eve.txt'))
@@ -381,7 +389,7 @@ def find_stim_steps(raw, pad_start=None, pad_stop=None, merge=0,
     """
 
     # pull stim channel from config if necessary
-    stim_channel = _get_stim_channel(stim_channel)
+    stim_channel = _get_stim_channel(stim_channel, raw.info)
 
     picks = pick_channels(raw.info['ch_names'], include=stim_channel)
     if len(picks) == 0:
@@ -478,8 +486,9 @@ def find_events(raw, stim_channel=None, verbose=None, output='onset',
         Name of the stim channel or all the stim channels
         affected by the trigger. If None, the config variables
         'MNE_STIM_CHANNEL', 'MNE_STIM_CHANNEL_1', 'MNE_STIM_CHANNEL_2',
-        etc. are read. If these are not found, it will default to
-        'STI 014'.
+        etc. are read. If these are not found, it will fall back to
+        'STI 014' if present, then fall back to the first channel of type
+        'stim', if present.
     verbose : bool, str, int, or None
         If not None, override default verbose level (see mne.verbose).
     output : 'onset' | 'offset' | 'step'
@@ -579,7 +588,7 @@ def find_events(raw, stim_channel=None, verbose=None, output='onset',
     min_samples = min_duration * raw.info['sfreq']
 
     # pull stim channel from config if necessary
-    stim_channel = _get_stim_channel(stim_channel)
+    stim_channel = _get_stim_channel(stim_channel, raw.info)
 
     pick = pick_channels(raw.info['ch_names'], include=stim_channel)
     if len(pick) == 0:

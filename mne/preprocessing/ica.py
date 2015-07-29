@@ -37,20 +37,12 @@ from ..viz import (plot_ica_components, plot_ica_scores,
 from ..channels.channels import _contains_ch_type, ContainsMixin
 from ..io.write import start_file, end_file, write_id
 from ..utils import (check_sklearn_version, logger, check_fname, verbose,
-                     _reject_data_segments, check_random_state)
+                     _reject_data_segments, check_random_state,
+                     _get_fast_dot)
 from ..filter import band_pass_filter
 from .bads import find_outliers
 from .ctps_ import ctps
 from ..externals.six import string_types, text_type
-
-
-def _get_fast_dot():
-    """"Helper to get fast dot"""
-    try:
-        from sklearn.utils.extmath import fast_dot
-    except ImportError:
-        fast_dot = np.dot
-    return fast_dot
 
 
 def _make_xy_sfunc(func, ndim_output=False):
@@ -887,6 +879,10 @@ class ICA(ContainsMixin):
         scores : np.ndarray of float, shape (``n_components_``)
             The correlation scores.
 
+        See also
+        --------
+        find_bads_eog
+
         References
         ----------
         [1] Dammers, J., Schiek, M., Boers, F., Silex, C., Zvyagintsev,
@@ -985,6 +981,10 @@ class ICA(ContainsMixin):
             The indices of EOG related components, sorted by score.
         scores : np.ndarray of float, shape (``n_components_``) | list of array
             The correlation scores.
+
+        See Also
+        --------
+        find_bads_ecg
         """
         if verbose is None:
             verbose = self.verbose
@@ -1335,7 +1335,7 @@ class ICA(ContainsMixin):
                                    head_pos=head_pos)
 
     def plot_sources(self, inst, picks=None, exclude=None, start=None,
-                     stop=None, title=None, show=True):
+                     stop=None, title=None, show=True, block=False):
         """Plot estimated latent sources given the unmixing matrix.
 
         Typical usecases:
@@ -1363,15 +1363,32 @@ class ICA(ContainsMixin):
             The figure title. If None a default is provided.
         show : bool
             If True, all open plots will be shown.
+        block : bool
+            Whether to halt program execution until the figure is closed.
+            Useful for interactive selection of components in raw and epoch
+            plotter. For evoked, this parameter has no effect. Defaults to
+            False.
 
         Returns
         -------
         fig : instance of pyplot.Figure
             The figure.
+
+        Notes
+        -----
+        For raw and epoch instances, it is possible to select components for
+        exclusion by clicking on the line. The selected components are added to
+        ``ica.exclude`` on close. The independent components can be viewed as
+        topographies by clicking on the component name on the left of of the
+        main axes. The topography view tries to infer the correct electrode
+        layout from the data. This should work at least for Neuromag data.
+
+        .. versionadded:: 0.10.0
         """
 
         return plot_ica_sources(self, inst=inst, picks=picks, exclude=exclude,
-                                title=title, start=start, stop=stop, show=show)
+                                title=title, start=start, stop=stop, show=show,
+                                block=block)
 
     def plot_scores(self, scores, exclude=None, axhline=None,
                     title='ICA component scores', figsize=(12, 6),

@@ -1,12 +1,11 @@
 """A module which implements the time frequency estimation.
 
-Authors : Alexandre Gramfort, alexandre.gramfort@telecom-paristech.fr
-          Hari Bharadwaj <hari@nmr.mgh.harvard.edu>
-
-License : BSD 3-clause
-
 Morlet code inspired by Matlab code from Sheraz Khan & Brainstorm & SPM
 """
+# Authors : Alexandre Gramfort <alexandre.gramfort@telecom-paristech.fr>
+#           Hari Bharadwaj <hari@nmr.mgh.harvard.edu>
+#
+# License : BSD (3-clause)
 
 import warnings
 from math import sqrt
@@ -19,7 +18,7 @@ from ..fixes import partial
 from ..baseline import rescale
 from ..parallel import parallel_func
 from ..utils import logger, verbose, _time_mask
-from ..channels.channels import ContainsMixin, PickDropChannelsMixin
+from ..channels.channels import ContainsMixin, UpdateChannelsMixin
 from ..io.pick import pick_info, pick_types
 from ..utils import check_fname
 from .multitaper import dpss_windows
@@ -67,6 +66,11 @@ def morlet(sfreq, freqs, n_cycles=7, sigma=None, zero_mean=False):
     -------
     Ws : list of array
         Wavelets time series
+
+    See Also
+    --------
+    mne.time_frequency.cwt_morlet : Compute time-frequency decomposition
+                                    with Morlet wavelets
     """
     Ws = list()
     n_cycles = np.atleast_1d(n_cycles)
@@ -266,6 +270,10 @@ def cwt_morlet(X, sfreq, freqs, use_fft=True, n_cycles=7.0, zero_mean=False):
     -------
     tfr : 3D array
         Time Frequency Decompositions (n_signals x n_frequencies x n_times)
+
+    See Also
+    --------
+    tfr.cwt : Compute time-frequency decomposition with user-provided wavelets
     """
     mode = 'same'
     # mode = "valid"
@@ -307,6 +315,11 @@ def cwt(X, Ws, use_fft=True, mode='same', decim=1):
     -------
     tfr : 3D array
         Time Frequency Decompositions (n_signals x n_frequencies x n_times)
+
+    See Also
+    --------
+    mne.time_frequency.cwt_morlet : Compute time-frequency decomposition
+                                    with Morlet wavelets
     """
     n_signals, n_times = X[:, ::decim].shape
     n_frequencies = len(Ws)
@@ -524,7 +537,7 @@ def _preproc_tfr(data, times, freqs, tmin, tmax, fmin, fmax, mode,
     return data, times, freqs, vmin, vmax
 
 
-class AverageTFR(ContainsMixin, PickDropChannelsMixin):
+class AverageTFR(ContainsMixin, UpdateChannelsMixin):
     """Container for Time-Frequency data
 
     Can for example store induced power at sensor level or intertrial
@@ -605,7 +618,7 @@ class AverageTFR(ContainsMixin, PickDropChannelsMixin):
     def plot(self, picks=None, baseline=None, mode='mean', tmin=None,
              tmax=None, fmin=None, fmax=None, vmin=None, vmax=None,
              cmap='RdBu_r', dB=False, colorbar=True, show=True,
-             title=None, verbose=None):
+             title=None, axes=None, verbose=None):
         """Plot TFRs in a topography with images
 
         Parameters
@@ -649,11 +662,16 @@ class AverageTFR(ContainsMixin, PickDropChannelsMixin):
         dB : bool
             If True, 20*log10 is applied to the data to get dB.
         colorbar : bool
-            If true, colorbar will be added to the plot
+            If true, colorbar will be added to the plot. For user defined axes,
+            the colorbar cannot be drawn. Defaults to True.
         show : bool
             Call pyplot.show() at the end.
         title : str | None
             String for title. Defaults to None (blank/no title).
+        axes : instance of Axes | list | None
+            The axes to plot to. If list, the list must be a list of Axes of
+            the same length as the number of channels. If instance of Axes,
+            there must be only one channel plotted.
         verbose : bool, str, int, or None
             If not None, override default verbose level (see mne.verbose).
 
@@ -672,16 +690,28 @@ class AverageTFR(ContainsMixin, PickDropChannelsMixin):
                          baseline, vmin, vmax, dB)
 
         tmin, tmax = times[0], times[-1]
-
-        for k, p in zip(range(len(data)), picks):
-            fig = plt.figure()
-            _imshow_tfr(plt, 0, tmin, tmax, vmin, vmax, ylim=None,
-                        tfr=data[k: k + 1], freq=freqs, x_label='Time (ms)',
-                        y_label='Frequency (Hz)', colorbar=colorbar,
-                        picker=False, cmap=cmap, title=title)
-
+        if isinstance(axes, plt.Axes):
+            axes = [axes]
+        if isinstance(axes, list) and len(axes) != len(picks):
+            raise RuntimeError('There must be an axes for each picked '
+                               'channel.')
+            if colorbar:
+                logger.warning('Cannot draw colorbar for user defined axes.')
+        for idx in range(len(data)):
+            if axes is None:
+                fig = plt.figure()
+                ax = fig.add_subplot(111)
+            else:
+                ax = axes[idx]
+                fig = ax.get_figure()
+            _imshow_tfr(ax, 0, tmin, tmax, vmin, vmax, ylim=None,
+                        tfr=data[idx: idx + 1], freq=freqs,
+                        x_label='Time (ms)', y_label='Frequency (Hz)',
+                        colorbar=False, picker=False, cmap=cmap)
+            if title:
+                fig.suptitle(title)
         if show:
-            fig.show()
+            plt.show()
         return fig
 
     def plot_topo(self, picks=None, baseline=None, mode='mean', tmin=None,
@@ -757,6 +787,7 @@ class AverageTFR(ContainsMixin, PickDropChannelsMixin):
             The figure containing the topography.
         """
         from ..viz.topo import _imshow_tfr, _plot_topo
+        import matplotlib.pyplot as plt
         times = self.times.copy()
         freqs = self.freqs
         data = self.data
@@ -785,7 +816,7 @@ class AverageTFR(ContainsMixin, PickDropChannelsMixin):
                          font_color=font_color)
 
         if show:
-            fig.show()
+            plt.show()
 
         return fig
 
@@ -998,6 +1029,10 @@ def write_tfrs(fname, tfr, overwrite=False):
     overwrite : bool
         If True, overwrite file (if it exists). Defaults to False.
 
+    See Also
+    --------
+    read_tfrs
+
     Notes
     -----
     .. versionadded:: 0.9.0
@@ -1022,6 +1057,10 @@ def read_tfrs(fname, condition=None):
     condition : int or str | list of int or str | None
         The condition to load. If None, all conditions will be returned.
         Defaults to None.
+
+    See Also
+    --------
+    write_tfrs
 
     Returns
     -------
@@ -1075,11 +1114,15 @@ def tfr_morlet(inst, freqs, n_cycles, use_fft=False,
 
     Returns
     -------
-    power : AverageTFR
+    power : instance of AverageTFR
         The averaged power.
-    itc : AverageTFR
+    itc : instance of AverageTFR
         The intertrial coherence (ITC). Only returned if return_itc
         is True.
+
+    See Also
+    --------
+    tfr_multitaper, tfr_stockwell
     """
     data = _get_data(inst, return_itc)
     picks = pick_types(inst.info, meg=True, eeg=True)
@@ -1213,6 +1256,10 @@ def tfr_multitaper(inst, freqs, n_cycles, time_bandwidth=4.0, use_fft=True,
     itc : AverageTFR
         The intertrial coherence (ITC). Only returned if return_itc
         is True.
+
+    See Also
+    --------
+    tfr_multitaper, tfr_stockwell
 
     Notes
     -----

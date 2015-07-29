@@ -84,6 +84,10 @@ def pick_channels(ch_names, include, exclude=[]):
         List of channels to exclude (if empty do not exclude any channel).
         Defaults to [].
 
+    See Also
+    --------
+    pick_channels_regexp, pick_types
+
     Returns
     -------
     sel : array of int
@@ -118,6 +122,10 @@ def pick_channels_regexp(ch_names, regexp):
     -------
     sel : array of int
         Indices of good channels.
+
+    See Also
+    --------
+    pick_channels
 
     Examples
     --------
@@ -477,7 +485,9 @@ def pick_types_forward(orig, meg=True, eeg=False, ref_meg=True, seeg=False,
 def channel_indices_by_type(info):
     """Get indices of channels by type
     """
-    idx = dict(grad=[], mag=[], eeg=[], seeg=[], eog=[], ecg=[])
+    idx = dict(grad=[], mag=[], eeg=[], seeg=[], eog=[], ecg=[], stim=[],
+               emg=[], ref_meg=[], misc=[], resp=[], chpi=[], exci=[], ias=[],
+               syst=[])
     for k, ch in enumerate(info['chs']):
         for key in idx.keys():
             if channel_type(info, k) == key:

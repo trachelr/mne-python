@@ -11,7 +11,7 @@ import numpy as np
 import warnings
 
 from .baseline import rescale
-from .channels.channels import (ContainsMixin, PickDropChannelsMixin,
+from .channels.channels import (ContainsMixin, UpdateChannelsMixin,
                                 SetChannelsMixin, InterpolationMixin,
                                 equalize_channels)
 from .filter import resample, detrend, FilterMixin
@@ -40,7 +40,7 @@ _aspect_rev = {str(FIFF.FIFFV_ASPECT_AVERAGE): 'average',
                str(FIFF.FIFFV_ASPECT_STD_ERR): 'standard_error'}
 
 
-class Evoked(ProjMixin, ContainsMixin, PickDropChannelsMixin,
+class Evoked(ProjMixin, ContainsMixin, UpdateChannelsMixin,
              SetChannelsMixin, InterpolationMixin, FilterMixin,
              ToDataFrameMixin):
     """Evoked data
@@ -362,7 +362,7 @@ class Evoked(ProjMixin, ContainsMixin, PickDropChannelsMixin,
         show : bool
             Call pyplot.show() at the end or not.
         ylim : dict
-            ylim for plots. e.g. ylim = dict(eeg=[-200e-6, 200e6])
+            ylim for plots. e.g. ylim = dict(eeg=[-200e-6, 200e-6])
             Valid keys are eeg, mag, grad
         xlim : 'tight' | tuple | None
             xlim for plots.
@@ -443,15 +443,17 @@ class Evoked(ProjMixin, ContainsMixin, PickDropChannelsMixin,
                      cbar_fmt="%3.1f", time_format='%01d ms', proj=False,
                      show=True, show_names=False, title=None, mask=None,
                      mask_params=None, outlines='head', contours=6,
-                     image_interp='bilinear', average=None, head_pos=None):
+                     image_interp='bilinear', average=None, head_pos=None,
+                     axes=None):
         """Plot topographic maps of specific time points
 
         Parameters
         ----------
         times : float | array of floats | None.
-            The time point(s) to plot. If None, 10 topographies will be shown
-            will a regular time spacing between the first and last time
-            instant.
+            The time point(s) to plot. If None, the number of ``axes``
+            determines the amount of time point(s). If ``axes`` is also None,
+            10 topographies will be shown with a regular time spacing between
+            the first and last time instant.
         ch_type : 'mag' | 'grad' | 'planar1' | 'planar2' | 'eeg' | None
             The channel type to plot. For 'grad', the gradiometers are collec-
             ted in pairs and the RMS for each pair is plotted.
@@ -469,7 +471,7 @@ class Evoked(ProjMixin, ContainsMixin, PickDropChannelsMixin,
         vmax : float | callable
             The value specfying the upper bound of the color range.
             If None, the maximum absolute value is used. If vmin is None,
-            but vmax is not, defaults to np.min(data).
+            but vmax is not, defaults to np.max(data).
             If callable, the output equals vmax(data).
         cmap : matplotlib colormap
             Colormap. Defaults to 'RdBu_r'.
@@ -544,6 +546,11 @@ class Evoked(ProjMixin, ContainsMixin, PickDropChannelsMixin,
             the head circle. If dict, can have entries 'center' (tuple) and
             'scale' (tuple) for what the center and scale of the head should be
             relative to the electrode locations.
+        axes : instance of Axes | list | None
+            The axes to plot to. If list, the list must be a list of Axes of
+            the same length as ``times`` (unless ``times`` is None). If
+            instance of Axes, ``times`` must be a float or a list of one float.
+            Defaults to None.
         """
         return plot_evoked_topomap(self, times=times, ch_type=ch_type,
                                    layout=layout, vmin=vmin,
@@ -557,7 +564,8 @@ class Evoked(ProjMixin, ContainsMixin, PickDropChannelsMixin,
                                    mask_params=mask_params,
                                    outlines=outlines, contours=contours,
                                    image_interp=image_interp,
-                                   average=average, head_pos=head_pos)
+                                   average=average, head_pos=head_pos,
+                                   axes=axes)
 
     def plot_field(self, surf_maps, time=None, time_label='t = %0.0f ms',
                    n_jobs=1):
@@ -819,6 +827,10 @@ class EvokedArray(Evoked):
     verbose : bool, str, int, or None
         If not None, override default verbose level (see mne.verbose).
         Defaults to raw.verbose.
+
+    See Also
+    --------
+    EpochsArray, io.RawArray
     """
 
     @verbose
@@ -1036,6 +1048,10 @@ def read_evokeds(fname, condition=None, baseline=None, kind='average',
     evoked : Evoked (if condition is int or str) or list of Evoked (if
         condition is None or list)
         The evoked dataset(s).
+
+    See Also
+    --------
+    write_evokeds
     """
     check_fname(fname, 'evoked', ('-ave.fif', '-ave.fif.gz'))
 
@@ -1064,6 +1080,10 @@ def write_evokeds(fname, evoked):
         The evoked dataset, or list of evoked datasets, to save in one file.
         Note that the measurement info from the first evoked instance is used,
         so be sure that information matches.
+
+    See Also
+    --------
+    read_evokeds
     """
     check_fname(fname, 'evoked', ('-ave.fif', '-ave.fif.gz'))
 
