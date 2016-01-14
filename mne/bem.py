@@ -10,6 +10,7 @@ import os
 import os.path as op
 import shutil
 import glob
+
 import numpy as np
 from scipy import linalg
 
@@ -820,6 +821,11 @@ def fit_sphere_to_headshape(info, dig_kinds=(FIFF.FIFFV_POINT_EXTRA,),
         Head center in head coordinates (mm).
     origin_device: ndarray, shape (3,)
         Head center in device coordinates (mm).
+
+    Notes
+    -----
+    This function excludes any points that are low and frontal
+    (``z < 0 and y > 0``) to improve the fit.
     """
     # get head digization points of the specified kind
     hsp = [p['r'] for p in info['dig'] if p['kind'] in dig_kinds]
@@ -843,6 +849,16 @@ def fit_sphere_to_headshape(info, dig_kinds=(FIFF.FIFFV_POINT_EXTRA,),
     origin_device *= 1e3
 
     logger.info('Fitted sphere radius:'.ljust(30) + '%0.1f mm' % radius)
+    # 99th percentile on Wikipedia for Giabella to back of head is 21.7cm,
+    # i.e. 108mm "radius", so let's go with 110mm
+    # en.wikipedia.org/wiki/Human_head#/media/File:HeadAnthropometry.JPG
+    if radius > 110.:
+        logger.warning('Estimated head size (%0.1f mm) exceeded 99th '
+                       'percentile for adult head size' % (radius,))
+    # > 2 cm away from head center in X or Y is strange
+    if np.sqrt(np.sum(origin_head[:2] ** 2)) > 20:
+        logger.warning('(X, Y) fit (%0.1f, %0.1f) more than 20 mm from '
+                       'head frame origin' % tuple(origin_head[:2]))
     logger.info('Origin head coordinates:'.ljust(30) +
                 '%0.1f %0.1f %0.1f mm' % tuple(origin_head))
     logger.info('Origin device coordinates:'.ljust(30) +
@@ -878,6 +894,30 @@ def _fit_sphere(points, disp='auto'):
     origin = x_opt[:3]
     radius = x_opt[3]
     return radius, origin
+
+
+def _check_origin(origin, info, coord_frame='head', disp=False):
+    """Helper to check or auto-determine the origin"""
+    if isinstance(origin, string_types):
+        if origin != 'auto':
+            raise ValueError('origin must be a numerical array, or "auto", '
+                             'not %s' % (origin,))
+        if coord_frame == 'head':
+            R, origin = fit_sphere_to_headshape(info, verbose=False)[:2]
+            origin /= 1000.
+            logger.info('    Automatic origin fit: head of radius %0.1f mm'
+                        % R)
+            del R
+        else:
+            origin = (0., 0., 0.)
+    origin = np.array(origin, float)
+    if origin.shape != (3,):
+        raise ValueError('origin must be a 3-element array')
+    if disp:
+        origin_str = ', '.join(['%0.1f' % (o * 1000) for o in origin])
+        logger.info('    Using origin %s mm in the %s frame'
+                    % (origin_str, coord_frame))
+    return origin
 
 
 # ############################################################################

@@ -11,6 +11,7 @@ from nose.tools import assert_raises, assert_true
 from numpy.testing import assert_allclose, assert_array_equal, assert_equal
 
 from mne import pick_types
+from mne.tests.common import assert_dig_allclose
 from mne.transforms import apply_trans
 from mne.io import Raw, read_raw_ctf
 from mne.io.tests.test_raw import _test_raw_reader
@@ -52,8 +53,7 @@ def test_read_ctf():
     os.mkdir(op.join(temp_dir, 'randpos'))
     ctf_eeg_fname = op.join(temp_dir, 'randpos', ctf_fname_catch)
     shutil.copytree(op.join(ctf_dir, ctf_fname_catch), ctf_eeg_fname)
-    raw = _test_raw_reader(read_raw_ctf, test_preloading=True,
-                           test_blocks=True, directory=ctf_eeg_fname)
+    raw = _test_raw_reader(read_raw_ctf, directory=ctf_eeg_fname)
     picks = pick_types(raw.info, meg=False, eeg=True)
     pos = np.random.RandomState(42).randn(len(picks), 3)
     fake_eeg_fname = op.join(ctf_eeg_fname, 'catch-alp-good-f.eeg')
@@ -136,8 +136,7 @@ def test_read_ctf():
             for key in ('loc', 'cal'):
                 assert_allclose(c1[key], c2[key], atol=1e-6, rtol=1e-4,
                                 err_msg='raw.info["chs"][%d][%s]' % (ii, key))
-        for d, d_c in zip(raw.info['dig'], raw_c.info['dig']):
-            assert_allclose(d['r'], d_c['r'], atol=1e-5)
+        assert_dig_allclose(raw.info, raw_c.info)
 
         # check data match
         raw_c.save(out_fname, overwrite=True, buffer_size_sec=1.)
@@ -164,5 +163,9 @@ def test_read_ctf():
         assert_allclose(raw[:][0], raw_c[:][0])
     assert_raises(TypeError, read_raw_ctf, 1)
     assert_raises(ValueError, read_raw_ctf, ctf_fname_continuous + 'foo.ds')
+    # test ignoring of system clock
+    read_raw_ctf(op.join(ctf_dir, ctf_fname_continuous), 'ignore')
+    assert_raises(ValueError, read_raw_ctf,
+                  op.join(ctf_dir, ctf_fname_continuous), 'foo')
 
 run_tests_if_main()

@@ -11,6 +11,7 @@
 
 from functools import partial
 import copy
+import warnings
 
 import numpy as np
 
@@ -27,7 +28,8 @@ from ..defaults import _handle_default
 
 def plot_epochs_image(epochs, picks=None, sigma=0., vmin=None,
                       vmax=None, colorbar=True, order=None, show=True,
-                      units=None, scalings=None, cmap='RdBu_r', fig=None):
+                      units=None, scalings=None, cmap='RdBu_r',
+                      fig=None, overlay_times=None):
     """Plot Event Related Potential / Fields image
 
     Parameters
@@ -35,8 +37,8 @@ def plot_epochs_image(epochs, picks=None, sigma=0., vmin=None,
     epochs : instance of Epochs
         The epochs
     picks : int | array-like of int | None
-        The indices of the channels to consider. If None, all good
-        data channels are plotted.
+        The indices of the channels to consider. If None, the first
+        five good channels are plotted.
     sigma : float
         The standard deviation of the Gaussian smoothing to apply along
         the epoch axis to apply in the image. If 0., no smoothing is applied.
@@ -69,6 +71,11 @@ def plot_epochs_image(epochs, picks=None, sigma=0., vmin=None,
         Figure instance to draw the image to. Figure must contain two axes for
         drawing the single trials and evoked responses. If None a new figure is
         created. Defaults to None.
+    overlay_times : array-like, shape (n_epochs,) | None
+        If not None the parameter is interpreted as time instants in seconds
+        and is added to the image. It is typically useful to display reaction
+        times. Note that it is defined with respect to the order
+        of epochs such that overlay_times[0] corresponds to epochs[0].
 
     Returns
     -------
@@ -82,7 +89,7 @@ def plot_epochs_image(epochs, picks=None, sigma=0., vmin=None,
     import matplotlib.pyplot as plt
     if picks is None:
         picks = pick_types(epochs.info, meg=True, eeg=True, ref_meg=False,
-                           exclude='bads')
+                           exclude='bads')[:5]
 
     if set(units.keys()) != set(scalings.keys()):
         raise ValueError('Scalings and units must have the same keys.')
@@ -95,6 +102,20 @@ def plot_epochs_image(epochs, picks=None, sigma=0., vmin=None,
     scale_vmin = True if vmin is None else False
     scale_vmax = True if vmax is None else False
     vmin, vmax = _setup_vmin_vmax(data, vmin, vmax)
+
+    if overlay_times is not None and len(overlay_times) != len(data):
+        raise ValueError('size of overlay_times parameter (%s) do not '
+                         'match the number of epochs (%s).'
+                         % (len(overlay_times), len(data)))
+
+    if overlay_times is not None:
+        overlay_times = np.array(overlay_times)
+        times_min = np.min(overlay_times)
+        times_max = np.max(overlay_times)
+        if ((times_min < epochs.tmin) or (times_max > epochs.tmax)):
+            warnings.warn('Some values in overlay_times fall outside of '
+                          'the epochs time interval (between %s s and %s s)' %
+                          (epochs.tmin, epochs.tmax))
 
     figs = list()
     for i, (this_data, idx) in enumerate(zip(np.swapaxes(data, 0, 1), picks)):
@@ -114,8 +135,20 @@ def plot_epochs_image(epochs, picks=None, sigma=0., vmin=None,
         if callable(order):
             this_order = order(epochs.times, this_data)
 
+        if this_order is not None and (len(this_order) != len(this_data)):
+            raise ValueError('size of order parameter (%s) does not '
+                             'match the number of epochs (%s).'
+                             % (len(this_order), len(this_data)))
+
+        this_overlay_times = None
+        if overlay_times is not None:
+            this_overlay_times = overlay_times
+
         if this_order is not None:
+            this_order = np.asarray(this_order)
             this_data = this_data[this_order]
+            if this_overlay_times is not None:
+                this_overlay_times = this_overlay_times[this_order]
 
         if sigma > 0.:
             this_data = ndimage.gaussian_filter1d(this_data, sigma=sigma,
@@ -131,6 +164,9 @@ def plot_epochs_image(epochs, picks=None, sigma=0., vmin=None,
                                 0, len(data)],
                         aspect='auto', origin='lower', interpolation='nearest',
                         vmin=vmin, vmax=vmax, cmap=cmap)
+        if this_overlay_times is not None:
+            plt.plot(1e3 * this_overlay_times, 0.5 + np.arange(len(this_data)),
+                     'k', linewidth=2)
         ax2 = plt.subplot2grid((3, 10), (2, 0), colspan=9, rowspan=1)
         if colorbar:
             ax3 = plt.subplot2grid((3, 10), (0, 9), colspan=1, rowspan=3)
@@ -159,34 +195,8 @@ def plot_epochs_image(epochs, picks=None, sigma=0., vmin=None,
     return figs
 
 
-def _drop_log_stats(drop_log, ignore=['IGNORED']):
-    """
-    Parameters
-    ----------
-    drop_log : list of lists
-        Epoch drop log from Epochs.drop_log.
-    ignore : list
-        The drop reasons to ignore.
-
-    Returns
-    -------
-    perc : float
-        Total percentage of epochs dropped.
-    """
-    # XXX: This function should be moved to epochs.py after
-    # removal of perc return parameter in plot_drop_log()
-
-    if not isinstance(drop_log, list) or not isinstance(drop_log[0], list):
-        raise ValueError('drop_log must be a list of lists')
-
-    perc = 100 * np.mean([len(d) > 0 for d in drop_log
-                          if not any(r in ignore for r in d)])
-
-    return perc
-
-
 def plot_drop_log(drop_log, threshold=0, n_max_plot=20, subject='Unknown',
-                  color=(0.9, 0.9, 0.9), width=0.8, ignore=['IGNORED'],
+                  color=(0.9, 0.9, 0.9), width=0.8, ignore=('IGNORED',),
                   show=True):
     """Show the channel stats based on a drop_log from Epochs
 
@@ -216,6 +226,7 @@ def plot_drop_log(drop_log, threshold=0, n_max_plot=20, subject='Unknown',
         The figure.
     """
     import matplotlib.pyplot as plt
+    from ..epochs import _drop_log_stats
     perc = _drop_log_stats(drop_log, ignore)
     scores = Counter([ch for d in drop_log for ch in d if ch not in ignore])
     ch_names = np.array(list(scores.keys()))
@@ -223,7 +234,11 @@ def plot_drop_log(drop_log, threshold=0, n_max_plot=20, subject='Unknown',
     if perc < threshold or len(ch_names) == 0:
         plt.text(0, 0, 'No drops')
         return fig
-    counts = 100 * np.array(list(scores.values()), dtype=float) / len(drop_log)
+    n_used = 0
+    for d in drop_log:  # "d" is the list of drop reasons for each epoch
+        if len(d) == 0 or any(ch not in ignore for ch in d):
+            n_used += 1  # number of epochs not ignored
+    counts = 100 * np.array(list(scores.values()), dtype=float) / n_used
     n_plot = min(n_max_plot, len(ch_names))
     order = np.flipud(np.argsort(counts))
     plt.title('%s: %0.1f%%' % (subject, perc))

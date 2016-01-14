@@ -4,8 +4,8 @@
 
 import numpy as np
 from ..evoked import Evoked
-from ..epochs import Epochs
-from ..io import Raw
+from ..epochs import _BaseEpochs
+from ..io import _BaseRaw
 from ..event import find_events
 
 from ..io.pick import pick_channels
@@ -89,7 +89,7 @@ def fix_stim_artifact(inst, events=None, event_id=None, tmin=0.,
     ch_names = inst.info['ch_names']
     picks = pick_channels(ch_names, ch_names)
 
-    if isinstance(inst, Raw):
+    if isinstance(inst, _BaseRaw):
         _check_preload(inst)
         if events is None:
             events = find_events(inst, stim_channel=stim_channel)
@@ -106,7 +106,7 @@ def fix_stim_artifact(inst, events=None, event_id=None, tmin=0.,
             last_samp = int(event_idx) - inst.first_samp + s_end
             _fix_artifact(data, window, picks, first_samp, last_samp, mode)
 
-    elif isinstance(inst, Epochs):
+    elif isinstance(inst, _BaseEpochs):
         _check_preload(inst)
         if inst.reject is not None:
             raise RuntimeError('Reject is already applied. Use reject=None '

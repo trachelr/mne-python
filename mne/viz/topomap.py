@@ -22,12 +22,10 @@ from ..io.pick import pick_types
 from ..utils import _clean_names, _time_mask, verbose, logger
 from .utils import (tight_layout, _setup_vmin_vmax, _prepare_trellis,
                     _check_delayed_ssp, _draw_proj_checkbox, figure_nobar,
-                    plt_show)
+                    plt_show, _process_times)
 from ..time_frequency import compute_epochs_psd
 from ..defaults import _handle_default
 from ..channels.layout import _find_topomap_coords
-from ..fixes import _get_argrelmax
-from ..externals.six import string_types
 
 
 def _prepare_topo_plot(inst, ch_type, layout):
@@ -403,6 +401,7 @@ def plot_topomap(data, pos, vmin=None, vmax=None, cmap='RdBu_r', sensors=True,
         delete the prefix 'MEG ' from all channel names, pass the function
         lambda x: x.replace('MEG ', ''). If `mask` is not None, only
         significant sensors will be shown.
+        If `True`, a list of names must be provided (see `names` keyword).
     mask : ndarray of bool, shape (n_channels, n_times) | None
         The channels to be marked as significant at a given time point.
         Indices set to `True` will be considered. Defaults to None.
@@ -486,16 +485,9 @@ def plot_topomap(data, pos, vmin=None, vmax=None, cmap='RdBu_r', sensors=True,
     vmin, vmax = _setup_vmin_vmax(data, vmin, vmax)
 
     pos, outlines = _check_outlines(pos, outlines, head_pos)
-    pos_x = pos[:, 0]
-    pos_y = pos[:, 1]
 
     ax = axis if axis else plt.gca()
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.set_frame_on(False)
-    if any([not pos_y.any(), not pos_x.any()]):
-        raise RuntimeError('No position information found, cannot compute '
-                           'geometries for topomap.')
+    pos_x, pos_y = _prepare_topomap(pos, ax)
     if outlines is None:
         xmin, xmax = pos_x.min(), pos_x.max()
         ymin, ymax = pos_y.min(), pos_y.max()
@@ -587,6 +579,9 @@ def plot_topomap(data, pos, vmin=None, vmax=None, cmap='RdBu_r', sensors=True,
             ax.plot(x, y, color='k', linewidth=linewidth, clip_on=False)
 
     if show_names:
+        if names is None:
+            raise ValueError("To show names, a list of names must be provided"
+                             " (see `names` keyword).")
         if show_names is True:
             def _show_names(x):
                 return x
@@ -1129,29 +1124,12 @@ def plot_evoked_topomap(evoked, times="auto", ch_type=None, layout=None,
     mask_params['markersize'] *= size / 2.
     mask_params['markeredgewidth'] *= size / 2.
 
-    if isinstance(axes, plt.Axes):
-        axes = [axes]
-
-    if isinstance(times, string_types):
-        if times == "peaks":
-            npeaks = 10 if axes is None else len(axes)
-            times = _find_peaks(evoked, npeaks)
-        elif times == "auto":
-            if axes is None:
-                times = np.linspace(evoked.times[0], evoked.times[-1], 10)
-            else:
-                times = np.linspace(evoked.times[0], evoked.times[-1],
-                                    len(axes))
-    elif np.isscalar(times):
-        times = [times]
-
-    times = np.array(times)
-
-    if times.ndim != 1:
-        raise ValueError('times must be 1D, got %d dimensions' % times.ndim)
-    if len(times) > 20:
-        raise RuntimeError('Too many plots requested. Please pass fewer '
-                           'than 20 time instants.')
+    if axes is not None:
+        if isinstance(axes, plt.Axes):
+            axes = [axes]
+        times = _process_times(evoked, times, n_peaks=len(axes))
+    else:
+        times = _process_times(evoked, times, n_peaks=None)
 
     n_times = len(times)
     nax = n_times + bool(colorbar)
@@ -1596,20 +1574,15 @@ def _onselect(eclick, erelease, tfr, pos, ch_type, itmin, itmax, ifmin, ifmax,
     plt_show(True)
 
 
-def _find_peaks(evoked, npeaks):
-    """Helper function for finding peaks from evoked data
-    Returns ``npeaks`` biggest peaks as a list of time points.
-    """
-    argrelmax = _get_argrelmax()
-    gfp = evoked.data.std(axis=0)
-    order = len(evoked.times) // 30
-    if order < 1:
-        order = 1
-    peaks = argrelmax(gfp, order=order, axis=0)[0]
-    if len(peaks) > npeaks:
-        max_indices = np.argsort(gfp[peaks])[-npeaks:]
-        peaks = np.sort(peaks[max_indices])
-    times = evoked.times[peaks]
-    if len(times) == 0:
-        times = [evoked.times[gfp.argmax()]]
-    return times
+def _prepare_topomap(pos, ax):
+    """Helper for preparing the topomap."""
+    pos_x = pos[:, 0]
+    pos_y = pos[:, 1]
+
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_frame_on(False)
+    if any([not pos_y.any(), not pos_x.any()]):
+        raise RuntimeError('No position information found, cannot compute '
+                           'geometries for topomap.')
+    return pos_x, pos_y

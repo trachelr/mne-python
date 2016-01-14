@@ -15,7 +15,7 @@ from mne.io import Raw
 from mne.io.array import RawArray
 from mne.io.tests.test_raw import _test_raw_reader
 from mne.io.meas_info import create_info, _kind_dict
-from mne.utils import slow_test, requires_version
+from mne.utils import slow_test, requires_version, run_tests_if_main
 
 matplotlib.use('Agg')  # for testing don't use X server
 
@@ -54,7 +54,8 @@ def test_array_raw():
     assert_equal(info['chs'][0]['kind'], _kind_dict['misc'][0])
     # use real types
     info = create_info(ch_names, sfreq, types)
-    raw2 = _test_raw_reader(RawArray, False, True, data=data, info=info)
+    raw2 = _test_raw_reader(RawArray, test_preloading=False,
+                            data=data, info=info)
     data2, times2 = raw2[:, :]
     assert_allclose(data, data2)
     assert_allclose(times, times2)
@@ -95,9 +96,9 @@ def test_array_raw():
     assert_true(len(events) > 2)
     epochs = Epochs(raw2, events, 1, -0.2, 0.4, preload=True)
     epochs.plot_drop_log()
-    with warnings.catch_warnings(record=True):  # deprecation
-        warnings.simplefilter('always')
-        epochs.plot()
+    epochs.plot()
     evoked = epochs.average()
     evoked.plot()
     plt.close('all')
+
+run_tests_if_main()

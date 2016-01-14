@@ -17,7 +17,7 @@
 # Dev branch marker is: 'X.Y.devN' where N is an integer.
 #
 
-__version__ = '0.11.dev0'
+__version__ = '0.12.dev0'
 
 # have to import verbose first since it's needed by many things
 from .utils import (set_log_level, set_log_file, verbose, set_config,
@@ -31,6 +31,7 @@ from .io.base import concatenate_raws
 from .chpi import get_chpi_positions
 from .io.meas_info import create_info
 from .io.kit import read_epochs_kit
+from .io.eeglab import read_epochs_eeglab
 from .bem import (make_sphere_model, make_bem_model, make_bem_solution,
                   read_bem_surfaces, write_bem_surfaces,
                   read_bem_solution, write_bem_solution)
@@ -50,6 +51,7 @@ from .source_estimate import (read_source_estimate, MixedSourceEstimate,
                               spatial_src_connectivity,
                               spatial_tris_connectivity,
                               spatial_dist_connectivity,
+                              spatial_inter_hemi_connectivity,
                               spatio_temporal_src_connectivity,
                               spatio_temporal_tris_connectivity,
                               spatio_temporal_dist_connectivity,

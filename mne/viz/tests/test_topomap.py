@@ -22,8 +22,8 @@ from mne.time_frequency.tfr import AverageTFR
 from mne.utils import slow_test
 
 from mne.viz import plot_evoked_topomap, plot_projs_topomap
-from mne.viz.topomap import (_check_outlines, _onselect, plot_topomap,
-                             _find_peaks)
+from mne.viz.topomap import (_check_outlines, _onselect, plot_topomap)
+from mne.viz.utils import _find_peaks
 
 # Set our plotters to test mode
 import matplotlib
@@ -68,6 +68,7 @@ def test_plot_topomap():
     assert_raises(KeyError, ev_bad.plot_topomap, head_pos=dict(foo='bar'))
     assert_raises(ValueError, ev_bad.plot_topomap, head_pos=dict(center=0))
     assert_raises(ValueError, ev_bad.plot_topomap, times=[-100])  # bad time
+    assert_raises(ValueError, ev_bad.plot_topomap, times=[[0]])  # bad time
     assert_raises(ValueError, ev_bad.plot_topomap, times=[[0]])  # bad time
 
     evoked.plot_topomap(0.1, layout=layout, scale=dict(mag=0.1))
@@ -194,9 +195,12 @@ def test_plot_topomap():
                   times, ch_type='eeg')
     plt.close('all')
 
-    # Test error messages for invalid pos parameter
+    # Error for missing names
     n_channels = len(pos)
     data = np.ones(n_channels)
+    assert_raises(ValueError, plot_topomap, data, pos, show_names=True)
+
+    # Test error messages for invalid pos parameter
     pos_1d = np.zeros(n_channels)
     pos_3d = np.zeros((n_channels, 2, 2))
     assert_raises(ValueError, plot_topomap, data, pos_1d)
